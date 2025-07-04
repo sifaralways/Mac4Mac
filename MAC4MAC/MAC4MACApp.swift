@@ -1,17 +1,13 @@
-//
-//  MAC4MACApp.swift
-//  MAC4MAC
-//
-//  Created by Akshat Singhal on 22/6/2025.
-//
-
 import SwiftUI
+import CoreAudio
 
 @main
-struct MAC4MACApp: App {
+struct SampleRateMenuBarApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        Settings {
+            EmptyView() // no UI needed
         }
     }
 }
