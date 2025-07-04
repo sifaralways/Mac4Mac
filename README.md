@@ -1,6 +1,6 @@
 # MasterAudioController4mac (MAC4MAC)
 
-![MAC4MAC Logo](./Assets/AppIcon.png)  
+![MAC4MAC Logo](./Assets/Mac4Mac.png)
 *Centralized audio control utility tailored for audiophiles and Mac music enthusiasts.*
 
 ---
@@ -18,6 +18,10 @@ Beyond seamless sample rate switching, MAC4MAC also provides:
 - A professional and unobtrusive menu bar presence.
 
 This app is perfect for audiophiles who demand precise control over their Mac audio chain without the hassle of constant manual configuration.
+![image](https://github.com/user-attachments/assets/54ef5270-6d2b-4c74-8d36-1d1afc54a422)
+
+![image](https://github.com/user-attachments/assets/a637bcf9-b977-4d34-b076-3e0ef535702c)
+
 
 ---
 
