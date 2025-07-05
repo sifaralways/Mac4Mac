@@ -29,6 +29,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LogWriter.log("✅ App launched")
+        // Set initial defaults for toggles only once
+        let defaults: [FeatureToggle: Bool] = [
+            .logging: true,
+            .playlistManagement: true
+        ]
+
+        for (feature, enabled) in defaults {
+            let key = "MAC4MAC.FeatureToggle.\(feature.rawValue)"
+            if UserDefaults.standard.object(forKey: key) == nil {
+                FeatureToggleManager.set(feature, enabled: enabled)
+            }
+        }
         setupMenuBar()
         setupTrackMonitor()
     }
@@ -64,8 +76,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.statusItem?.button?.title = String(format: "🎵 %.1f kHz", rate / 1000.0)
                     self.updateMenu()
                 }
+                
 
-                PlaylistManager.addTrack(persistentID: persistentID, sampleRate: rate)
+                if FeatureToggleManager.isEnabled(.playlistManagement) {
+                    PlaylistManager.addTrack(persistentID: persistentID, sampleRate: rate)
+                } else {
+                    LogWriter.log("⏭️ Playlist creation skipped (disabled in feature toggles)")
+                }
                 LogWriter.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             }
         }
@@ -97,7 +114,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let midiItem = NSMenuItem(title: "🎛️ Open Audio MIDI Setup", action: #selector(openAudioMIDISetup), keyEquivalent: "")
         midiItem.target = self
         menu.addItem(midiItem)
+        menu.addItem(NSMenuItem.separator())
 
+        let toggleMenu = NSMenu()
+        for feature in FeatureToggle.allCases {
+            let state = FeatureToggleManager.isEnabled(feature)
+            let title = state ? "✅ \(feature.displayName)" : "🚫 \(feature.displayName)"
+            let item = NSMenuItem(title: title, action: #selector(toggleFeature(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = feature
+            toggleMenu.addItem(item)
+        }
+        let toggleSubmenu = NSMenuItem(title: "🛠️ Features", action: nil, keyEquivalent: "")
+        menu.setSubmenu(toggleMenu, for: toggleSubmenu)
+        menu.addItem(toggleSubmenu)
+        
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "Quit MAC4MAC", action: #selector(quitApp), keyEquivalent: "q")
 
@@ -123,6 +154,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 LogWriter.log("🎛️ Audio MIDI Setup launched")
             }
         }
+    }
+    @objc func toggleFeature(_ sender: NSMenuItem) {
+        guard let feature = sender.representedObject as? FeatureToggle else { return }
+        FeatureToggleManager.toggle(feature)
+        LogWriter.log("🛠️ Toggled \(feature.displayName) → \(FeatureToggleManager.isEnabled(feature))")
+        updateMenu()
     }
 
     @objc func quitApp() {
