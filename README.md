@@ -32,6 +32,7 @@ No need to build or clone — just download, run, and enjoy.
 
 ![Menu Bar Screenshot](image.png)
 ![Playlists Created by App](image-1.png)
+![Music Sync, Logs and Playlists](image-2.png)
 
 
 ---
