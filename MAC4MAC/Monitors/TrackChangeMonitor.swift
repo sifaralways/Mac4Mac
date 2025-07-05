@@ -12,10 +12,20 @@ class TrackChangeMonitor {
             tell application "Music"
                 if it is running then
                     try
-                        set currentID to the persistent ID of current track
-                        return currentID
-                    on error
-                        return "ERROR"
+                        -- Wait a moment in case the track is still initializing
+                        delay 0.2
+                        if exists current track then
+                            set t to current track
+                            if persistent ID of t is not missing value then
+                                return persistent ID of t
+                            else
+                                return "MISSING_ID"
+                            end if
+                        else
+                            return "NO_TRACK"
+                        end if
+                    on error errMsg
+                        return "ERROR: " & errMsg
                     end try
                 else
                     return "NOT_RUNNING"

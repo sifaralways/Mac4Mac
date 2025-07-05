@@ -1,63 +1,72 @@
+// LogMonitor.swift
+// MAC4MAC
+
 import Foundation
 
 class LogMonitor {
     static func fetchLatestSampleRate(completion: @escaping (Double, String) -> Void) {
+        LogWriter.log("🔍 Fetching Sample Rate...")
+
+        let script = """
+        log show --style syslog --predicate "process == \\\"Music\\\"" --last 5m | grep -i "activeFormat:" | sed -nE 's/.*tier: ([^;]+);.*groupID: [^:]+-([0-9]+)-[0-9]+;.*bitDepth: ([^;]+);.*/SampleRate: \\2, BitDepth: \\3, Quality: \\1/p'
+        """
+
         let task = Process()
+        task.launchPath = "/bin/bash"
+        task.arguments = ["-c", script]
+
         let pipe = Pipe()
-
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-        task.arguments = [
-            "show",
-            "--predicate",
-            "eventMessage CONTAINS \"Created new AudioQueue for format:\"",
-            "--style",
-            "syslog",
-            "--last",
-            "10s"
-        ]
         task.standardOutput = pipe
-
-        let handle = pipe.fileHandleForReading
-        task.terminationHandler = { _ in
-            let data = handle.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                let lines = output.components(separatedBy: "\n").reversed()
-                for line in lines {
-                    if let rate = parseSampleRate(from: line), let song = parseSongName(from: line) {
-                        LogWriter.log("🧠 Matched sampleRate: \(rate), song: \(song)")
-                        completion(rate, song)
-                        return
-                    }
-                }
-                LogWriter.log("⚠️ No sampleRate or song found in last 10s logs.")
-            }
-        }
+        task.standardError = pipe
 
         do {
             try task.run()
         } catch {
-            LogWriter.log("❌ Failed to run log command: \(error.localizedDescription)")
+            LogWriter.log("❌ Failed to run log fetch: \(error.localizedDescription)")
+            completion(44100.0, "Unknown Song")
+            return
         }
-    }
 
-    static func parseSampleRate(from log: String) -> Double? {
-        let pattern = #"sampleRate:(\d+)"#
-        if let regex = try? NSRegularExpression(pattern: pattern),
-           let match = regex.firstMatch(in: log, range: NSRange(log.startIndex..., in: log)),
-           let range = Range(match.range(at: 1), in: log) {
-            return Double(log[range])
-        }
-        return nil
-    }
+        DispatchQueue.global().async {
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
-    static func parseSongName(from log: String) -> String? {
-        let pattern = #"Queue->Player synchronization started - player:[^\]]* queueItems:\[<AVPlayerItem:[^>]*> [^\[]* \(([^\)]+)\)"#
-        if let regex = try? NSRegularExpression(pattern: pattern),
-           let match = regex.firstMatch(in: log, range: NSRange(log.startIndex..., in: log)),
-           match.numberOfRanges > 1,
-           let range = Range(match.range(at: 1), in: log) {
-            return String(log[range])
+            guard let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !output.isEmpty else {
+                LogWriter.log("⚠️ No sampleRate or song found in last 5m logs.")
+                completion(44100.0, "Unknown Song")
+                return
+            }
+
+            let lines = output.components(separatedBy: "\n").filter { $0.contains("SampleRate:") }
+            if let lastLine = lines.last {
+                LogWriter.log("📈 Raw Output: \(lastLine)")
+
+                let pattern = #"SampleRate: ([^,]+), BitDepth: ([^,]+), Quality: ([^,]+)"#
+                if let regex = try? NSRegularExpression(pattern: pattern),
+                   let match = regex.firstMatch(in: lastLine, range: NSRange(lastLine.startIndex..., in: lastLine)) {
+
+                    let sampleRateRange = Range(match.range(at: 1), in: lastLine)
+                    let bitDepthRange = Range(match.range(at: 2), in: lastLine)
+                    let qualityRange = Range(match.range(at: 3), in: lastLine)
+
+                    if let sampleRateStr = sampleRateRange.map({ String(lastLine[$0]) })?.replacingOccurrences(of: "khz", with: ""),
+                       let sampleRateKhz = Double(sampleRateStr) {
+
+                        let rateHz = sampleRateKhz
+                        let bitDepth = bitDepthRange.map { String(lastLine[$0]) } ?? "?"
+                        let quality = qualityRange.map { String(lastLine[$0]) } ?? "?"
+                        let description = "\(quality) \(bitDepth)"
+
+                        LogWriter.log("📛 Track Name: Apple Music Track")
+                        completion(rateHz, description)
+                        return
+                    }
+                }
+            }
+
+            LogWriter.log("⚠️ Unexpected format from log output: \(output)")
+            completion(44100.0, "Unknown Song")
         }
-        return "Apple Music Track"
     }
 }
