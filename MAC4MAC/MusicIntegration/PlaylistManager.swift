@@ -4,7 +4,7 @@ class PlaylistManager {
 
     /// Add track to playlist named by sample rate string, creating playlist if needed
     static func addTrack(persistentID: String, sampleRate: Double) {
-        let playlistName = String(format: "MAC4MAC %.1f kHz", sampleRate / 1000.0)
+        let playlistName = String(format: "MAC4MAC %.1f kHz", sampleRate / 1000)
         let script = """
         tell application "Music"
             if not (exists playlist "\(playlistName)") then
