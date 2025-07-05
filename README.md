@@ -1,133 +1,157 @@
 # 🎧 MAC4MAC – Master Audio Controller for Mac
 
-**MAC4MAC** is a lightweight macOS menu bar utility designed for audiophiles.  
-It automatically switches your system's **audio output sample rate** to match the currently playing **Apple Music** track — giving you optimal fidelity without lifting a finger.
+**MAC4MAC** is a lightweight, native macOS menu bar app that automatically adjusts your system's audio output sample rate to match the current Apple Music track — giving you bit-perfect playback every time.
 
 ---
 
 ## 📥 Download
 
-👉 [Download latest version](https://github.com/sifaralways/Mac4Mac/releases/latest) from the [**Releases**](https://github.com/sifaralways/Mac4Mac/releases) page.  
-No need to build or clone — just download, run, and enjoy.
+👉 [**Download latest version**](https://github.com/sifaralways/Mac4Mac/releases/latest) from the Releases page.  
+No need to build or clone — just download the `.app`, move it to Applications, and run.
 
 > **Requires macOS Monterey or later**  
-> On first launch, grant **Automation** access for Apple Music when prompted.
+> On first launch, grant **Automation** access for the Music app.
 
 ---
 
 ## ✨ Features
 
-- 🎵 Automatically detects Apple Music track sample rate from macOS logs
-- 🎚️ Instantly switches your system's output sample rate
-- 🎧 Displays current output device, sample rate & bit depth in menu bar
-- 📁 Logs track + sample rate in `~/Library/Logs/MAC4MAC.log`
-- 🧠 Creates and maintains **Apple Music playlists** by sample rate:
-  - e.g., `MAC4MAC 44.1 kHz`, `MAC4MAC 192 kHz`, etc.
-- 🖱️ Manual override for supported sample rates via menu
-- ☑️ Minimal, native macOS menu bar experience
+- 🔍 **Detects Apple Music track sample rate** from system logs
+- 🎚️ **Auto-switches** your system audio output to match
+- 📟 Displays **current sample rate & device** in menu bar
+- 📝 **Optional playlist creation** by sample rate
+  - e.g., `MAC4MAC 96 kHz`, `MAC4MAC 192 kHz`
+- ✏️ **Customizable playlist prefix**
+- 🔧 Toggle playlist feature from menu bar
+- 📂 Logs all activity in `~/Library/Logs/MAC4MAC.log`
+- 🧠 **Intelligent log parsing** fallback if sample rate logs are missing
+- 🎛️ Manual override for sample rate
+- 💡 Minimal native UI, auto-launch ready
 
 ---
 
-## 📸 Preview
+## 🖼️ Preview
 
-![Menu Bar Screenshot](image.png)
+> _Screenshots coming soon!_
+
+![Menu Bar Screenshot](image-3.png)
 ![Playlists Created by App](image-1.png)
 ![Music Sync, Logs and Playlists](image-2.png)
-
-
----
-
-## 🧪 How It Works
-
-1. Listens for **track changes** in Apple Music.
-2. Reads sample rate from the system log:
-
-Created new AudioQueue for format: sampleRate:44100.000000
-
-3. Changes output sample rate using CoreAudio APIs.
-4. Logs the event and adds the track to a sample rate-based playlist (if available).
 
 ---
 
 ## 📂 Example Log Output
 
-Logs are saved at:  
-`~/Library/Logs/MAC4MAC.log`
+MAC4MAC keeps detailed logs under:
 
-Example:
+~/Library/Logs/MAC4MAC.log
 
-[2025-07-04T21:00:18Z] 🎶 Track changed to 8197F7C7D276B7C6
+Sample log for a track:
 
-[2025-07-04T21:00:20Z] 🧠 Matched sampleRate: 96000.0, song: Apple Music Track
-
-[2025-07-04T21:00:20Z] 🎯 Sample rate: 96000.0 Hz, Song: Apple Music Track
-
-[2025-07-04T21:00:20Z] ✅ Changed sample rate to 96000.0
-
-[2025-07-04T21:00:20Z] ➕ Added track to playlist ‘MAC4MAC 96 kHz’
-
-
----
-
-## 🎛️ Menu Bar Options
-
-| Label                          | Description                            |
-|--------------------------------|----------------------------------------|
-| 🎧 Output: [Device]            | Displays current audio output device   |
-| 📈 Sample Rate: [Rate]         | Shows current sample rate              |
-| 🧪 Bit Depth: 32-bit (fixed)   | Always 32-bit                          |
-| 🎚️ Override Sample Rate       | Manually choose from supported rates   |
-| 🎛️ Open Audio MIDI Setup      | Opens native macOS utility             |
-| ❌ Quit MAC4MAC                | Exits the app                          |
-
----
-
-## 🔒 Permissions
-
-To function correctly, the app needs:
-
-- **Automation Access** for the **Music** app (you’ll be prompted on first run)
-- App Sandbox must be **disabled** (already done for releases)
-
-If Automation is not working:
-1. Open **System Settings > Privacy & Security > Automation**
-2. Enable toggle for **MAC4MAC → Music**
-
----
-
-## 🚧 Known Limitations
-
-- Only supports **Apple Music** (not Spotify or other players)
-- Song must exist in your **local library** for playlist management
-- Some virtual devices (e.g., AirPlay, HDMI) may block sample rate switching
-
----
-
-## 🛠️ Developer Notes
-
-If you want to build or extend this project:
-
-### 🧾 Requirements
-
-- macOS Monterey or newer
-- Xcode 14+
-- App Sandbox must be **disabled**
-- Automation permission for `com.apple.Music`
-
-
----
-
-## 🤝 Credits
-
-- Concept & development: [Akshat Singhal](https://github.com/sifaralways)
-- Powered by: CoreAudio, AppleScript, and Swift
-- Core Foundation: [vincentneo](https://github.com/vincentneo)
-
----
-
-## 📃 License
-
-MIT License — feel free to use, fork, improve, and share.
+```text
+[2025-07-05T03:16:57Z] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[2025-07-05T03:16:57Z] 🎵 New Track Detected
+[2025-07-05T03:16:57Z] 🆔 Persistent ID: F6DB04D20640D93F
+[2025-07-05T03:16:57Z] 🔍 Fetching Sample Rate...
+[2025-07-05T03:16:57Z] 📛 Track Name: Apple Music Track
+[2025-07-05T03:16:57Z] 🎯 Sample rate: 96000.0 Hz
+[2025-07-05T03:16:57Z] ✅ Changed sample rate to 96000.0
+[2025-07-05T03:16:57Z] ➕ Added track to playlist 'MAC4MAC 96 kHz'
+[2025-07-05T03:16:57Z] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 ⸻
+
+🎛️ Menu Bar Options
+
+Menu Item	Description
+🎧 Device: [Name]	Current audio output device
+📈 Sample Rate: [X] kHz	Current system output sample rate
+🧪 Bit Depth: 32-bit (fixed)	Shown for reference
+🎚️ Override Sample Rate	Choose a new rate manually
+📝 Enable Playlist Creation	Toggle to allow/disallow playlist updates
+✏️ Set Playlist Prefix	Set prefix used when creating playlists (optional)
+🎛️ Open Audio MIDI Setup	Opens native macOS audio tool
+❌ Quit MAC4MAC	Closes the app
+
+
+⸻
+
+🔒 Permissions & Setup
+
+The app needs Automation access to control Apple Music.
+	1.	First time launch → You’ll be prompted
+	2.	If not:
+	•	Go to System Settings → Privacy & Security → Automation
+	•	Enable MAC4MAC → Music
+
+For full functionality, the app must:
+	•	Have Automation permissions
+	•	Be in /Applications or a non-quarantined folder
+
+⸻
+
+⚙️ Settings
+
+Settings are persisted between launches.
+You can access them via the menu bar:
+	•	✅ Enable/disable playlist management
+	•	✏️ Change playlist name prefix
+
+Playlists are only created if:
+	•	Playlist feature is enabled
+	•	Track has a valid persistentID
+	•	Track is found in the Apple Music library
+
+⸻
+
+🚧 Known Limitations
+	•	Only supports Apple Music
+	•	Only works for local tracks in your library
+	•	Playlist creation may fail for:
+	•	Streaming-only tracks (no persistent ID)
+	•	Missing permissions
+	•	Sample rate detection depends on system logs (which Apple may change)
+
+⸻
+
+🔧 Developer Notes
+
+Folder Structure
+
+MAC4MAC/
+├── AppDelegate.swift         # Main app lifecycle
+├── Audio/AudioManager.swift  # Audio device interface
+├── Monitors/
+│   ├── TrackChangeMonitor.swift
+│   └── LogMonitor.swift
+├── Playlists/PlaylistManager.swift
+├── Settings/SettingsManager.swift
+├── Utils/LogWriter.swift
+
+Built With
+	•	Swift
+	•	AppleScript (via ScriptingBridge)
+	•	CoreAudio
+	•	log show and shell piping
+	•	No external dependencies
+
+⸻
+
+🤝 Credits
+	•	Created by Akshat Singhal
+	•	Based on feedback from the Apple Music audiophile community
+	•	Inspired by tools like BitPerfect and SampleRateMenu
+
+⸻
+
+📃 License
+
+MIT License — free to use, adapt, and improve.
+
+⸻
+
+🔗 Related
+	•	Apple Music Lossless FAQ
+	•	CoreAudio Overview
+
