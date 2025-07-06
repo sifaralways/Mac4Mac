@@ -26,21 +26,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var currentSampleRate: Double = 44100
     var trackChangeMonitor = TrackChangeMonitor()
+    let httpServer = Mac4MacHTTPServer()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LogWriter.log("✅ App launched")
+
         // Set initial defaults for toggles only once
         let defaults: [FeatureToggle: Bool] = [
             .logging: true,
-            .playlistManagement: true
+            .playlistManagement: true,
+            .httpServer: true
         ]
-
         for (feature, enabled) in defaults {
             let key = "MAC4MAC.FeatureToggle.\(feature.rawValue)"
             if UserDefaults.standard.object(forKey: key) == nil {
                 FeatureToggleManager.set(feature, enabled: enabled)
             }
         }
+
+        httpServer.startServer()
         setupMenuBar()
         setupTrackMonitor()
     }
@@ -55,34 +59,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setupTrackMonitor() {
         LogWriter.log("📻 Starting track monitor")
-        
+
         trackChangeMonitor.onTrackChange = { [weak self] persistentID in
             guard let self = self else { return }
 
             LogWriter.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             LogWriter.log("🎵 New Track Detected")
             LogWriter.log("🆔 Persistent ID: \(persistentID)")
-
             LogWriter.log("🔍 Fetching Sample Rate...")
 
             LogMonitor.fetchLatestSampleRate { rate, songName in
                 LogWriter.log("📛 Track Name: \(songName)")
                 LogWriter.log("🎯 Sample rate: \(rate) Hz")
 
-                AudioManager.setOutputSampleRate(to: rate)
-                self.currentSampleRate = rate
+                // Avoid redundant rate switching
+                if abs(rate - self.currentSampleRate) >= 0.5 {
+                    AudioManager.setOutputSampleRate(to: rate)
+                    self.currentSampleRate = rate
 
-                DispatchQueue.main.async {
-                    self.statusItem?.button?.title = String(format: "🎵 %.1f kHz", rate / 1000.0)
-                    self.updateMenu()
+                    DispatchQueue.main.async {
+                        self.statusItem?.button?.title = String(format: "🎵 %.1f kHz", rate / 1000.0)
+                        self.updateMenu()
+                    }
+                } else {
+                    LogWriter.log("🔄 Sample rate unchanged, no update needed")
                 }
-                
 
                 if FeatureToggleManager.isEnabled(.playlistManagement) {
                     PlaylistManager.addTrack(persistentID: persistentID, sampleRate: rate)
                 } else {
                     LogWriter.log("⏭️ Playlist creation skipped (disabled in feature toggles)")
                 }
+
+                self.httpServer.updateTrackData(
+                    trackName: songName,
+                    artist: "Unknown Artist", // You can extract from metadata later
+                    album: "Unknown Album",
+                    persistentID: persistentID,
+                    isPlaying: true
+                )
+                self.httpServer.updateAudioConfig(
+                    sampleRate: rate,
+                    bitDepth: 32,
+                    deviceName: AudioManager.getOutputDeviceName() ?? "Unknown"
+                )
+
                 LogWriter.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             }
         }
@@ -128,7 +149,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toggleSubmenu = NSMenuItem(title: "🛠️ Features", action: nil, keyEquivalent: "")
         menu.setSubmenu(toggleMenu, for: toggleSubmenu)
         menu.addItem(toggleSubmenu)
-        
+
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "Quit MAC4MAC", action: #selector(quitApp), keyEquivalent: "q")
 
@@ -155,6 +176,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
     @objc func toggleFeature(_ sender: NSMenuItem) {
         guard let feature = sender.representedObject as? FeatureToggle else { return }
         FeatureToggleManager.toggle(feature)
