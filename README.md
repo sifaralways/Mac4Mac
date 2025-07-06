@@ -1,6 +1,7 @@
 # 🎧 MAC4MAC – Master Audio Controller for Mac - Bring Bit-perfect audio to mac
 
-**MAC4MAC** is a lightweight, native macOS menu bar app that automatically adjusts your system's audio output sample rate to match the current Apple Music track — giving you bit-perfect playback every time.
+**MAC4MAC** ensures bit-perfect audio from Apple Music by automatically switching your sample rate—something macOS still doesn’t do right. 
+It is a lightweight, native macOS menu bar app that automatically adjusts your system's audio output sample rate to match the current Apple Music track — giving you bit-perfect playback every time.
 
 ---
 
