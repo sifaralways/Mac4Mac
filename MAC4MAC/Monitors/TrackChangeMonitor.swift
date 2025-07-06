@@ -1,10 +1,17 @@
 import Foundation
+import AppKit
 
 class TrackChangeMonitor {
     private var lastTrackID: String?
     private var timer: Timer?
 
-    var onTrackChange: ((String) -> Void)?  // persistentID passed
+    struct TrackInfo {
+        let name: String
+        let album: String
+        let persistentID: String
+    }
+
+    var onTrackChange: ((TrackInfo) -> Void)?  // now passes full track info
 
     func startMonitoring() {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
@@ -12,15 +19,17 @@ class TrackChangeMonitor {
             tell application "Music"
                 if it is running then
                     try
-                        -- Wait a moment in case the track is still initializing
                         delay 0.2
                         if exists current track then
                             set t to current track
+                            set trackName to name of t
+                            set albumName to album of t
                             if persistent ID of t is not missing value then
-                                return persistent ID of t
+                                set trackID to persistent ID of t
                             else
-                                return "MISSING_ID"
+                                set trackID to "MISSING_ID"
                             end if
+                            return trackName & "||" & albumName & "||" & trackID
                         else
                             return "NO_TRACK"
                         end if
@@ -45,13 +54,27 @@ class TrackChangeMonitor {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             if let output = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-               output != "ERROR", output != "NOT_RUNNING", !output.isEmpty {
+               !output.isEmpty,
+               !output.hasPrefix("ERROR"),
+               output != "NOT_RUNNING",
+               output != "NO_TRACK" {
 
-                if self.lastTrackID != nil && self.lastTrackID != output {
-                    LogWriter.log("🎶 Track changed to \(output)")
-                    self.onTrackChange?(output)
+                let components = output.components(separatedBy: "||")
+                guard components.count == 3 else {
+                    LogWriter.log("⚠️ Unexpected script output: \(output)")
+                    return
                 }
-                self.lastTrackID = output
+
+                let name = components[0]
+                let album = components[1]
+                let id = components[2]
+
+                if self.lastTrackID != id {
+                    self.lastTrackID = id
+                    let trackInfo = TrackInfo(name: name, album: album, persistentID: id)
+                    LogWriter.log("🎶 Track changed to \(name) from album \(album), ID \(id)")
+                    self.onTrackChange?(trackInfo)
+                }
             }
         }
     }

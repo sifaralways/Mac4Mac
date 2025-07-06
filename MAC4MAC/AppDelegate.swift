@@ -60,23 +60,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func setupTrackMonitor() {
         LogWriter.log("📻 Starting track monitor")
 
-        trackChangeMonitor.onTrackChange = { [weak self] persistentID in
+        trackChangeMonitor.onTrackChange = { [weak self] trackInfo in
             guard let self = self else { return }
 
             LogWriter.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             LogWriter.log("🎵 New Track Detected")
-            LogWriter.log("🆔 Persistent ID: \(persistentID)")
+            LogWriter.log("📛 Name: \(trackInfo.name)")
+            LogWriter.log("💿 Album: \(trackInfo.album)")
+            LogWriter.log("🆔 Persistent ID: \(trackInfo.persistentID)")
             LogWriter.log("🔍 Fetching Sample Rate...")
 
-            LogMonitor.fetchLatestSampleRate { rate, songName in
+            LogMonitor.fetchLatestSampleRate(forTrack: trackInfo.name) { rate, songName in
                 LogWriter.log("📛 Track Name: \(songName)")
                 LogWriter.log("🎯 Sample rate: \(rate) Hz")
 
-                // Avoid redundant rate switching
                 if abs(rate - self.currentSampleRate) >= 0.5 {
                     AudioManager.setOutputSampleRate(to: rate)
                     self.currentSampleRate = rate
-
                     DispatchQueue.main.async {
                         self.statusItem?.button?.title = String(format: "🎵 %.1f kHz", rate / 1000.0)
                         self.updateMenu()
@@ -86,16 +86,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 if FeatureToggleManager.isEnabled(.playlistManagement) {
-                    PlaylistManager.addTrack(persistentID: persistentID, sampleRate: rate)
+                    PlaylistManager.addTrack(persistentID: trackInfo.persistentID, sampleRate: rate)
                 } else {
                     LogWriter.log("⏭️ Playlist creation skipped (disabled in feature toggles)")
                 }
 
                 self.httpServer.updateTrackData(
-                    trackName: songName,
-                    artist: "Unknown Artist", // You can extract from metadata later
-                    album: "Unknown Album",
-                    persistentID: persistentID,
+                    trackName: trackInfo.name,
+                    artist: "Unknown Artist", // Future: extract using Music app scripting or metadata
+                    album: trackInfo.album,
+                    persistentID: trackInfo.persistentID,
                     isPlaying: true
                 )
                 self.httpServer.updateAudioConfig(

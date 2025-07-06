@@ -1,10 +1,7 @@
-// LogMonitor.swift
-// MAC4MAC
-
 import Foundation
 
 class LogMonitor {
-    static func fetchLatestSampleRate(completion: @escaping (Double, String) -> Void) {
+    static func fetchLatestSampleRate(forTrack trackName: String, completion: @escaping (Double, String) -> Void) {
         LogWriter.log("🔍 Fetching Sample Rate...")
 
         let script = """
@@ -23,7 +20,7 @@ class LogMonitor {
             try task.run()
         } catch {
             LogWriter.log("❌ Failed to run log fetch: \(error.localizedDescription)")
-            completion(44100.0, "Unknown Song")
+            completion(44100.0, trackName)
             return
         }
 
@@ -34,7 +31,7 @@ class LogMonitor {
             guard let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !output.isEmpty else {
                 LogWriter.log("⚠️ No sampleRate or song found in last 5m logs.")
-                completion(44100.0, "Unknown Song")
+                completion(44100.0, trackName)
                 return
             }
 
@@ -57,16 +54,17 @@ class LogMonitor {
                         let bitDepth = bitDepthRange.map { String(lastLine[$0]) } ?? "?"
                         let quality = qualityRange.map { String(lastLine[$0]) } ?? "?"
                         let description = "\(quality) \(bitDepth)"
+                        LogWriter.log("🎧 Audio Format: \(description)")
 
-                        LogWriter.log("📛 Track Name: Apple Music Track")
-                        completion(rateHz, description)
+                        LogWriter.log("📛 Track Name: \(trackName)")
+                        completion(rateHz, trackName)
                         return
                     }
                 }
             }
 
             LogWriter.log("⚠️ Unexpected format from log output: \(output)")
-            completion(44100.0, "Unknown Song")
+            completion(44100.0, trackName)
         }
     }
 }
