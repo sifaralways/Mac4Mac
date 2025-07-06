@@ -3,7 +3,7 @@ import Network
 
 class Mac4MacHTTPServer {
     private var listener: NWListener?
-    private let port: UInt16 = 8080
+    private let port: UInt16 = 8989
     
     // Enhanced track data structure matching Mac4Mac's capabilities
     private var currentTrackData = TrackData(

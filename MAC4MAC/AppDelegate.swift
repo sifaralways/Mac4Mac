@@ -151,6 +151,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(toggleSubmenu)
 
         menu.addItem(NSMenuItem.separator())
+        // --- New version & build number menu item ---
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        let versionItem = NSMenuItem(title: "Version \(version) (Build \(build))", action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        menu.addItem(versionItem)
         menu.addItem(withTitle: "Quit MAC4MAC", action: #selector(quitApp), keyEquivalent: "q")
 
         statusItem?.menu = menu
