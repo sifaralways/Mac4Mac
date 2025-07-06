@@ -51,10 +51,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem?.button {
-            button.title = String(format: "🎵 %.1f kHz", currentSampleRate / 1000.0)
+        if let _ = statusItem?.button {
+            updateStatusBarTitle()
         }
         updateMenu()
+    }
+
+    func updateStatusBarTitle() {
+        guard let button = statusItem?.button else { return }
+
+        let sampleRateString = String(format: " %.1f kHz", currentSampleRate / 1000.0)
+
+        guard let icon = NSImage(named: "AppIcon") else {
+            button.title = sampleRateString
+            return
+        }
+
+        icon.size = NSSize(width: 18, height: 18)
+        icon.isTemplate = true // for dark/light mode
+
+        let attachment = NSTextAttachment()
+        attachment.image = icon
+        let iconString = NSAttributedString(attachment: attachment)
+
+        // Offset the baseline so it aligns better with text
+        let baselineOffset = NSAttributedString(string: sampleRateString, attributes: [
+            .baselineOffset: 3
+        ])
+
+        let fullString = NSMutableAttributedString()
+        fullString.append(iconString)
+        fullString.append(baselineOffset)
+
+        button.attributedTitle = fullString
     }
 
     func setupTrackMonitor() {
@@ -78,7 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     AudioManager.setOutputSampleRate(to: rate)
                     self.currentSampleRate = rate
                     DispatchQueue.main.async {
-                        self.statusItem?.button?.title = String(format: "🎵 %.1f kHz", rate / 1000.0)
+                        self.updateStatusBarTitle()
                         self.updateMenu()
                     }
                 } else {
@@ -93,7 +122,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 self.httpServer.updateTrackData(
                     trackName: trackInfo.name,
-                    artist: "Unknown Artist", // Future: extract using Music app scripting or metadata
+                    artist: "Unknown Artist",
                     album: trackInfo.album,
                     persistentID: trackInfo.persistentID,
                     isPlaying: true
@@ -151,12 +180,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(toggleSubmenu)
 
         menu.addItem(NSMenuItem.separator())
-        // --- New version & build number menu item ---
+
+        // Version + Build (disabled, greyed out)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         let versionItem = NSMenuItem(title: "Version \(version) (Build \(build))", action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         menu.addItem(versionItem)
+
         menu.addItem(withTitle: "Quit MAC4MAC", action: #selector(quitApp), keyEquivalent: "q")
 
         statusItem?.menu = menu
@@ -166,7 +197,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let rate = sender.representedObject as? Double else { return }
         AudioManager.setOutputSampleRate(to: rate)
         currentSampleRate = rate
-        statusItem?.button?.title = String(format: "🎵 %.1f kHz", currentSampleRate / 1000.0)
+        updateStatusBarTitle()
         updateMenu()
     }
 
