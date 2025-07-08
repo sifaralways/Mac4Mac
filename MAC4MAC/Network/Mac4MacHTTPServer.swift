@@ -14,7 +14,8 @@ class Mac4MacHTTPServer {
         sampleRate: 44100.0,
         bitDepth: 32,
         isPlaying: false,
-        audioDevice: "Unknown Device"
+        audioDevice: "Unknown Device",
+        artworkBase64: nil
     )
     
     struct TrackData: Codable {
@@ -26,6 +27,7 @@ class Mac4MacHTTPServer {
         let bitDepth: Int
         let isPlaying: Bool
         let audioDevice: String
+        let artworkBase64: String?
         let timestamp: Date
         
         // Computed properties for convenience
@@ -37,8 +39,12 @@ class Mac4MacHTTPServer {
             return "\(bitDepth)-bit"
         }
         
+        var hasArtwork: Bool {
+            return artworkBase64 != nil
+        }
+        
         init(trackName: String, artist: String, album: String, persistentID: String?,
-             sampleRate: Double, bitDepth: Int, isPlaying: Bool, audioDevice: String) {
+             sampleRate: Double, bitDepth: Int, isPlaying: Bool, audioDevice: String, artworkBase64: String?) {
             self.trackName = trackName
             self.artist = artist
             self.album = album
@@ -47,6 +53,7 @@ class Mac4MacHTTPServer {
             self.bitDepth = bitDepth
             self.isPlaying = isPlaying
             self.audioDevice = audioDevice
+            self.artworkBase64 = artworkBase64
             self.timestamp = Date()
         }
     }
@@ -83,6 +90,8 @@ class Mac4MacHTTPServer {
                 
                 if request.contains("GET /track") {
                     self?.sendTrackData(connection: connection)
+                } else if request.contains("GET /artwork") {
+                    self?.sendArtwork(connection: connection)
                 } else if request.contains("GET /status") {
                     self?.sendStatus(connection: connection)
                 } else if request.contains("GET /audio") {
@@ -112,13 +121,37 @@ class Mac4MacHTTPServer {
         }
     }
     
+    private func sendArtwork(connection: NWConnection) {
+        if let artworkBase64 = currentTrackData.artworkBase64,
+           let artworkData = Data(base64Encoded: artworkBase64) {
+            
+            // Try to determine the image format
+            let contentType: String
+            if artworkData.starts(with: [0xFF, 0xD8, 0xFF]) {
+                contentType = "image/jpeg"
+            } else if artworkData.starts(with: [0x89, 0x50, 0x4E, 0x47]) {
+                contentType = "image/png"
+            } else {
+                contentType = "application/octet-stream"
+            }
+            
+            let response = createHTTPResponse(data: artworkData, contentType: contentType)
+            connection.send(content: response, completion: .contentProcessed { _ in
+                connection.cancel()
+            })
+        } else {
+            sendNotFound(connection: connection, message: "No artwork available for current track")
+        }
+    }
+    
     private func sendStatus(connection: NWConnection) {
         let status = [
             "status": "Mac4Mac Server Running",
             "port": port,
             "version": "1.0",
             "endpoints": [
-                "/track": "Current track information",
+                "/track": "Current track information with artwork",
+                "/artwork": "Current track artwork (binary image data)",
                 "/status": "Server status",
                 "/audio": "Audio device information"
             ]
@@ -159,13 +192,14 @@ class Mac4MacHTTPServer {
         let welcome = """
         {
             "message": "Mac4Mac HTTP Server",
-            "description": "Provides real-time Apple Music track and audio information",
+            "description": "Provides real-time Apple Music track and audio information with artwork support",
             "endpoints": {
-                "/track": "Current track information",
+                "/track": "Current track information including base64 artwork",
+                "/artwork": "Current track artwork as binary image data",
                 "/status": "Server status",
                 "/audio": "Audio device information"
             },
-            "usage": "GET requests only, JSON responses"
+            "usage": "GET requests only, JSON responses for most endpoints, binary for /artwork"
         }
         """
         
@@ -175,11 +209,12 @@ class Mac4MacHTTPServer {
         })
     }
     
-    private func sendNotFound(connection: NWConnection) {
+    private func sendNotFound(connection: NWConnection, message: String? = nil) {
+        let notFoundMessage = message ?? "Available endpoints: /track, /artwork, /status, /audio"
         let notFound = """
         {
             "error": "Not Found",
-            "message": "Available endpoints: /track, /status, /audio"
+            "message": "\(notFoundMessage)"
         }
         """
         
@@ -213,6 +248,7 @@ class Mac4MacHTTPServer {
         Access-Control-Allow-Origin: *\r
         Access-Control-Allow-Methods: GET\r
         Access-Control-Allow-Headers: Content-Type\r
+        Cache-Control: no-cache\r
         \r
         
         """
@@ -225,7 +261,7 @@ class Mac4MacHTTPServer {
     
     /// Update track information - call this from TrackChangeMonitor
     func updateTrackData(trackName: String, artist: String, album: String = "Unknown Album",
-                        persistentID: String?, isPlaying: Bool) {
+                        persistentID: String?, isPlaying: Bool, artworkBase64: String? = nil) {
         currentTrackData = TrackData(
             trackName: trackName,
             artist: artist,
@@ -234,10 +270,12 @@ class Mac4MacHTTPServer {
             sampleRate: currentTrackData.sampleRate, // Keep existing sample rate
             bitDepth: currentTrackData.bitDepth,     // Keep existing bit depth
             isPlaying: isPlaying,
-            audioDevice: currentTrackData.audioDevice // Keep existing device
+            audioDevice: currentTrackData.audioDevice, // Keep existing device
+            artworkBase64: artworkBase64
         )
         
-        print("[Mac4Mac HTTP Server] Updated track: \(trackName) by \(artist)")
+        let artworkStatus = artworkBase64 != nil ? "with artwork" : "without artwork"
+        print("[Mac4Mac HTTP Server] Updated track: \(trackName) by \(artist) \(artworkStatus)")
     }
     
     /// Update audio configuration - call this from AudioManager
@@ -250,7 +288,8 @@ class Mac4MacHTTPServer {
             sampleRate: sampleRate,
             bitDepth: bitDepth,
             isPlaying: currentTrackData.isPlaying,
-            audioDevice: deviceName
+            audioDevice: deviceName,
+            artworkBase64: currentTrackData.artworkBase64 // Keep existing artwork
         )
         
         print("[Mac4Mac HTTP Server] Updated audio config: \(String(format: "%.1f", sampleRate / 1000.0)) kHz, \(bitDepth)-bit, \(deviceName)")
@@ -266,7 +305,8 @@ class Mac4MacHTTPServer {
             sampleRate: currentTrackData.sampleRate,
             bitDepth: currentTrackData.bitDepth,
             isPlaying: isPlaying,
-            audioDevice: currentTrackData.audioDevice
+            audioDevice: currentTrackData.audioDevice,
+            artworkBase64: currentTrackData.artworkBase64 // Keep existing artwork
         )
         
         print("[Mac4Mac HTTP Server] Updated playing state: \(isPlaying ? "Playing" : "Paused")")

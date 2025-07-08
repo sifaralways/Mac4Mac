@@ -1,5 +1,6 @@
 import AppKit
 import ScriptingBridge
+import Network
 
 // MARK: - Music ScriptingBridge Protocols
 
@@ -27,9 +28,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var currentSampleRate: Double = 44100
     var trackChangeMonitor = TrackChangeMonitor()
     let httpServer = Mac4MacHTTPServer()
+    let webSocketServer = Mac4MacWebSocketServer()
+    
+    // Network permission helper
+    private var permissionTriggerListener: NWListener?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        LogWriter.log("✅ App launched")
+        LogWriter.log("✅ AppDelegate: App launched with debug logging")
 
         // Set initial defaults for toggles only once
         let defaults: [FeatureToggle: Bool] = [
@@ -44,9 +49,86 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        httpServer.startServer()
+        // Request network permissions first
+        requestNetworkPermissions { [weak self] in
+            // Start servers after permission is granted
+            LogWriter.log("🌐 AppDelegate: Starting servers...")
+            self?.httpServer.startServer()
+            self?.webSocketServer.startServer()
+            LogWriter.log("✅ AppDelegate: Servers started")
+        }
+        
         setupMenuBar()
         setupTrackMonitor()
+    }
+    
+    private func requestNetworkPermissions(completion: @escaping () -> Void) {
+        LogWriter.log("🔐 AppDelegate: Requesting network permissions...")
+        
+        // Create a temporary listener to trigger the permission dialog
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
+        
+        do {
+            // Use Bonjour service to trigger local network permission
+            let service = NWListener.Service(name: "Mac4Mac-Permission", type: "_mac4mac._tcp")
+            permissionTriggerListener = try NWListener(service: service, using: parameters)
+            
+            permissionTriggerListener?.newConnectionHandler = { connection in
+                // Don't accept connections, just trigger permission
+                connection.cancel()
+            }
+            
+            permissionTriggerListener?.serviceRegistrationUpdateHandler = { serviceRegistration in
+                switch serviceRegistration {
+                case .add(_):
+                    LogWriter.log("✅ AppDelegate: Network permission granted")
+                    // Stop the permission trigger listener
+                    self.permissionTriggerListener?.cancel()
+                    self.permissionTriggerListener = nil
+                    // Start the actual servers
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        completion()
+                    }
+                case .remove(_):
+                    LogWriter.log("⚠️ AppDelegate: Network service registration removed")
+                @unknown default:
+                    break
+                }
+            }
+            
+            permissionTriggerListener?.stateUpdateHandler = { state in
+                switch state {
+                case .failed(let error):
+                    LogWriter.log("❌ AppDelegate: Permission trigger failed: \(error)")
+                    // Start servers anyway
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        completion()
+                    }
+                case .ready:
+                    LogWriter.log("🔐 AppDelegate: Permission trigger ready")
+                default:
+                    break
+                }
+            }
+            
+            permissionTriggerListener?.start(queue: .global())
+            
+            // Fallback timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                if self.permissionTriggerListener != nil {
+                    LogWriter.log("⏱️ AppDelegate: Permission timeout - starting servers anyway")
+                    self.permissionTriggerListener?.cancel()
+                    self.permissionTriggerListener = nil
+                    completion()
+                }
+            }
+            
+        } catch {
+            LogWriter.log("❌ AppDelegate: Failed to create permission trigger: \(error)")
+            // Start servers anyway
+            completion()
+        }
     }
 
     func setupMenuBar() {
@@ -87,21 +169,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setupTrackMonitor() {
-        LogWriter.log("📻 Starting track monitor")
+        LogWriter.log("📻 AppDelegate: Starting track monitor with artwork support")
 
         trackChangeMonitor.onTrackChange = { [weak self] trackInfo in
-            guard let self = self else { return }
+            guard let self = self else {
+                LogWriter.log("❌ AppDelegate: Self is nil in trackChange callback")
+                return
+            }
 
-            LogWriter.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            LogWriter.log("🎵 New Track Detected")
-            LogWriter.log("📛 Name: \(trackInfo.name)")
-            LogWriter.log("💿 Album: \(trackInfo.album)")
-            LogWriter.log("🆔 Persistent ID: \(trackInfo.persistentID)")
-            LogWriter.log("🔍 Fetching Sample Rate...")
+            LogWriter.log("🎵 AppDelegate: ========================================")
+            LogWriter.log("🎵 AppDelegate: TRACK CHANGE CALLBACK TRIGGERED")
+            LogWriter.log("🎵 AppDelegate: ========================================")
+            LogWriter.log("📛 AppDelegate: Name: \(trackInfo.name)")
+            LogWriter.log("🎤 AppDelegate: Artist: \(trackInfo.artist)")
+            LogWriter.log("💿 AppDelegate: Album: \(trackInfo.album)")
+            LogWriter.log("🆔 AppDelegate: Persistent ID: \(trackInfo.persistentID)")
+            
+            // Debug the artwork situation
+            if let artworkData = trackInfo.artworkData {
+                LogWriter.log("🖼️ AppDelegate: Artwork found: \(artworkData.count) bytes")
+                
+                // Additional artwork debugging
+                let base64Preview = String(artworkData.base64EncodedString().prefix(50))
+                LogWriter.log("🔍 AppDelegate: Base64 preview: \(base64Preview)...")
+                
+                // Check if it's a valid image format
+                if artworkData.starts(with: [0xFF, 0xD8, 0xFF]) {
+                    LogWriter.log("📸 AppDelegate: Detected JPEG format")
+                } else if artworkData.starts(with: [0x89, 0x50, 0x4E, 0x47]) {
+                    LogWriter.log("📸 AppDelegate: Detected PNG format")
+                } else {
+                    LogWriter.log("❓ AppDelegate: Unknown image format - first 8 bytes: \(artworkData.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " "))")
+                }
+            } else {
+                LogWriter.log("⚠️ AppDelegate: No artwork data received")
+            }
+            
+            LogWriter.log("🔍 AppDelegate: Fetching Sample Rate...")
 
             LogMonitor.fetchLatestSampleRate(forTrack: trackInfo.name) { rate, songName in
-                LogWriter.log("📛 Track Name: \(songName)")
-                LogWriter.log("🎯 Sample rate: \(rate) Hz")
+                LogWriter.log("📛 AppDelegate: Sample rate callback - Track Name: \(songName)")
+                LogWriter.log("🎯 AppDelegate: Sample rate: \(rate) Hz")
 
                 if abs(rate - self.currentSampleRate) >= 0.5 {
                     AudioManager.setOutputSampleRate(to: rate)
@@ -111,33 +219,66 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         self.updateMenu()
                     }
                 } else {
-                    LogWriter.log("🔄 Sample rate unchanged, no update needed")
+                    LogWriter.log("🔄 AppDelegate: Sample rate unchanged, no update needed")
                 }
 
                 if FeatureToggleManager.isEnabled(.playlistManagement) {
                     PlaylistManager.addTrack(persistentID: trackInfo.persistentID, sampleRate: rate)
                 } else {
-                    LogWriter.log("⏭️ Playlist creation skipped (disabled in feature toggles)")
+                    LogWriter.log("⏭️ AppDelegate: Playlist creation skipped (disabled in feature toggles)")
                 }
 
+                // Convert artwork to base64 if available
+                var artworkBase64: String? = nil
+                if let artworkData = trackInfo.artworkData {
+                    artworkBase64 = artworkData.base64EncodedString()
+                    LogWriter.log("🖼️ AppDelegate: Artwork converted to base64 (\(artworkBase64!.count) chars)")
+                } else {
+                    LogWriter.log("❌ AppDelegate: No artwork to convert")
+                }
+
+                LogWriter.log("🌐 AppDelegate: Updating HTTP server...")
+                // Update HTTP server
                 self.httpServer.updateTrackData(
                     trackName: trackInfo.name,
-                    artist: "Unknown Artist",
+                    artist: trackInfo.artist,
                     album: trackInfo.album,
                     persistentID: trackInfo.persistentID,
-                    isPlaying: true
+                    isPlaying: true,
+                    artworkBase64: artworkBase64
                 )
                 self.httpServer.updateAudioConfig(
                     sampleRate: rate,
                     bitDepth: 32,
                     deviceName: AudioManager.getOutputDeviceName() ?? "Unknown"
                 )
+                LogWriter.log("✅ AppDelegate: HTTP server updated")
 
-                LogWriter.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                LogWriter.log("📡 AppDelegate: Broadcasting via WebSocket...")
+                // Broadcast via WebSocket
+                self.webSocketServer.broadcastTrackUpdate(
+                    trackName: trackInfo.name,
+                    artist: trackInfo.artist,
+                    album: trackInfo.album,
+                    persistentID: trackInfo.persistentID,
+                    isPlaying: true,
+                    artworkBase64: artworkBase64
+                )
+                self.webSocketServer.broadcastAudioConfigUpdate(
+                    sampleRate: rate,
+                    bitDepth: 32,
+                    deviceName: AudioManager.getOutputDeviceName() ?? "Unknown"
+                )
+                LogWriter.log("✅ AppDelegate: WebSocket broadcast completed")
+
+                LogWriter.log("🎵 AppDelegate: ========================================")
+                LogWriter.log("🎵 AppDelegate: TRACK CHANGE PROCESSING COMPLETE")
+                LogWriter.log("🎵 AppDelegate: ========================================")
             }
         }
 
         trackChangeMonitor.startMonitoring()
+        LogWriter.log("✅ AppDelegate: Track monitor setup completed")
     }
 
     func updateMenu() {
@@ -181,6 +322,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Network status info
+        let networkItem = NSMenuItem(title: "🌐 Network: Servers running", action: nil, keyEquivalent: "")
+        networkItem.isEnabled = false
+        menu.addItem(networkItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Version + Build (disabled, greyed out)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
@@ -207,9 +355,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let config = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
             if let error = error {
-                LogWriter.log("❌ Failed to open Audio MIDI Setup: \(error.localizedDescription)")
+                LogWriter.log("❌ AppDelegate: Failed to open Audio MIDI Setup: \(error.localizedDescription)")
             } else {
-                LogWriter.log("🎛️ Audio MIDI Setup launched")
+                LogWriter.log("🎛️ AppDelegate: Audio MIDI Setup launched")
             }
         }
     }
@@ -217,11 +365,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleFeature(_ sender: NSMenuItem) {
         guard let feature = sender.representedObject as? FeatureToggle else { return }
         FeatureToggleManager.toggle(feature)
-        LogWriter.log("🛠️ Toggled \(feature.displayName) → \(FeatureToggleManager.isEnabled(feature))")
+        LogWriter.log("🛠️ AppDelegate: Toggled \(feature.displayName) → \(FeatureToggleManager.isEnabled(feature))")
         updateMenu()
     }
 
     @objc func quitApp() {
         NSApp.terminate(nil)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        permissionTriggerListener?.cancel()
+        webSocketServer.stopServer()
     }
 }
