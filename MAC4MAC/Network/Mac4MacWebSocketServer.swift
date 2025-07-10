@@ -6,6 +6,8 @@ class Mac4MacWebSocketServer {
     private var listener: NWListener?
     private var connections: [WebSocketConnection] = []
     private let port: UInt16 = 8990
+    private var progressTracker = ProgressTracker()
+    static weak var shared: Mac4MacWebSocketServer?
     
     // Message types for communication
     enum MessageType: String, CaseIterable {
@@ -15,6 +17,9 @@ class Mac4MacWebSocketServer {
         case remoteCommand = "remote_command"
         case heartbeat = "heartbeat"
         case serverInfo = "server_info"
+        case progressUpdate = "progress_update"
+        case seekCommand = "seek_command"
+        case volumeCommand = "volume_command"
     }
     
     class WebSocketConnection {
@@ -24,6 +29,42 @@ class Mac4MacWebSocketServer {
         
         init(connection: NWConnection) {
             self.connection = connection
+        }
+    }
+    
+    class ProgressTracker {
+        var isTracking = false
+        var lastPosition: Double = 0
+        var trackDuration: Double = 0
+        var timer: Timer?
+        var updateInterval: TimeInterval = 1.0 // Default 1 second
+        
+        func startTracking() {
+            stopTracking()
+            isTracking = true
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.timer = Timer.scheduledTimer(withTimeInterval: self.updateInterval, repeats: true) { _ in
+                    Mac4MacWebSocketServer.shared?.fetchAndBroadcastProgress()
+                }
+            }
+            
+            LogWriter.log("⏱️ ProgressTracker: Started with \(updateInterval)s interval")
+        }
+        
+        func stopTracking() {
+            timer?.invalidate()
+            timer = nil
+            isTracking = false
+            LogWriter.log("⏸️ ProgressTracker: Stopped")
+        }
+        
+        func setUpdateInterval(_ interval: TimeInterval) {
+            updateInterval = max(0.1, min(5.0, interval)) // Clamp between 0.1 and 5 seconds
+            if isTracking {
+                startTracking() // Restart with new interval
+            }
         }
     }
     
@@ -65,6 +106,7 @@ class Mac4MacWebSocketServer {
             }
             
             listener?.start(queue: .global())
+            Mac4MacWebSocketServer.shared = self
             print("[Mac4Mac WebSocket] ✅ Started on port \(port)")
         } catch {
             print("[Mac4Mac WebSocket] ❌ Failed to start: \(error)")
@@ -196,7 +238,7 @@ class Mac4MacWebSocketServer {
             "version": "1.0",
             "wsPort": port,
             "httpPort": 8989,
-            "capabilities": ["track_updates", "audio_config", "remote_control", "artwork"]
+            "capabilities": ["track_updates", "audio_config", "remote_control", "artwork", "progress_tracking", "seek_control", "volume_control"]
         ])
         
         sendWebSocketMessage(to: wsConnection, message: serverInfo)
@@ -342,12 +384,21 @@ class Mac4MacWebSocketServer {
             if let data = json["data"] as? [String: Any] {
                 handleRemoteCommand(data)
             }
+        case .seekCommand:
+            if let data = json["data"] as? [String: Any] {
+                handleSeekCommand(data)
+            }
+        case .volumeCommand:
+            if let data = json["data"] as? [String: Any] {
+                handleVolumeCommand(data)
+            }
         case .heartbeat:
             // Respond to heartbeat
             let response = WebSocketMessage(type: .heartbeat, data: [
                 "status": "alive",
                 "connections": connections.filter { $0.isWebSocketUpgraded }.count,
-                "serverTime": ISO8601DateFormatter().string(from: Date())
+                "serverTime": ISO8601DateFormatter().string(from: Date()),
+                "progressTracking": progressTracker.isTracking
             ])
             sendWebSocketMessage(to: wsConnection, message: response)
         default:
@@ -363,21 +414,59 @@ class Mac4MacWebSocketServer {
         
         print("[Mac4Mac WebSocket] 🎮 Received remote command: \(command)")
         
-        let script: String
         switch command {
         case "play_pause":
-            script = "tell application \"Music\" to playpause"
+            let script = "tell application \"Music\" to playpause"
+            executeAppleScript(script)
         case "next_track":
-            script = "tell application \"Music\" to next track"
+            let script = "tell application \"Music\" to next track"
+            executeAppleScript(script)
         case "previous_track":
-            script = "tell application \"Music\" to previous track"
+            let script = "tell application \"Music\" to previous track"
+            executeAppleScript(script)
         case "stop":
-            script = "tell application \"Music\" to stop"
+            let script = "tell application \"Music\" to stop"
+            executeAppleScript(script)
+        case "start_progress_tracking":
+            startProgressTracking()
+        case "stop_progress_tracking":
+            stopProgressTracking()
+        case "set_progress_interval":
+            if let interval = data["interval"] as? Double {
+                setProgressInterval(interval)
+            }
         default:
             print("[Mac4Mac WebSocket] ❓ Unknown command: \(command)")
+        }
+    }
+    
+    private func handleSeekCommand(_ data: [String: Any]) {
+        guard let position = data["position"] as? Double else {
+            print("[Mac4Mac WebSocket] ❌ No position in seek command")
             return
         }
         
+        print("[Mac4Mac WebSocket] ⏭️ Seeking to position: \(position)")
+        
+        let script = "tell application \"Music\" to set player position to \(position)"
+        executeAppleScript(script)
+        
+        // Immediately fetch and broadcast new position
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+            self.fetchAndBroadcastProgress()
+        }
+    }
+    
+    private func handleVolumeCommand(_ data: [String: Any]) {
+        guard let volume = data["volume"] as? Int else {
+            print("[Mac4Mac WebSocket] ❌ No volume in volume command")
+            return
+        }
+        
+        let clampedVolume = max(0, min(100, volume))
+        print("[Mac4Mac WebSocket] 🔊 Setting volume to: \(clampedVolume)")
+        
+        let script = "tell application \"Music\" to set sound volume to \(clampedVolume)"
         executeAppleScript(script)
     }
     
@@ -393,6 +482,101 @@ class Mac4MacWebSocketServer {
         } catch {
             print("[Mac4Mac WebSocket] ❌ Failed to execute command: \(error)")
         }
+    }
+    
+    func fetchAndBroadcastProgress() {
+        let script = """
+        tell application "Music"
+            if it is running then
+                try
+                    set isPlaying to (player state is playing)
+                    if exists current track then
+                        set pos to player position
+                        set dur to duration of current track
+                        set vol to sound volume
+                        return (pos as string) & "," & (dur as string) & "," & (vol as string) & "," & (isPlaying as string)
+                    else
+                        return "0,0,50,false"
+                    end if
+                on error
+                    return "0,0,50,false"
+                end try
+            else
+                return "stopped"
+            end if
+        end tell
+        """
+        
+        DispatchQueue.global().async {
+            let task = Process()
+            task.launchPath = "/usr/bin/osascript"
+            task.arguments = ["-e", script]
+            
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            
+            do {
+                try task.run()
+                task.waitUntilExit()
+                
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let output = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) {
+                    
+                    if output == "stopped" {
+                        self.progressTracker.stopTracking()
+                        return
+                    }
+                    
+                    let components = output.components(separatedBy: ",")
+                    if components.count >= 4,
+                       let position = Double(components[0]),
+                       let duration = Double(components[1]),
+                       let volume = Int(components[2]) {
+                        
+                        let isPlaying = components[3] == "true"
+                        
+                        // Adjust tracking interval based on play state
+                        let newInterval: TimeInterval = isPlaying ? 1.0 : 5.0
+                        if abs(newInterval - self.progressTracker.updateInterval) > 0.1 {
+                            self.progressTracker.setUpdateInterval(newInterval)
+                        }
+                        
+                        let message = WebSocketMessage(type: .progressUpdate, data: [
+                            "position": position,
+                            "duration": duration,
+                            "volume": volume,
+                            "isPlaying": isPlaying,
+                            "percentage": duration > 0 ? (position / duration) * 100 : 0
+                        ])
+                        
+                        DispatchQueue.main.async {
+                            self.broadcast(message)
+                        }
+                    }
+                }
+            } catch {
+                print("[Mac4Mac WebSocket] ❌ Failed to fetch progress: \(error)")
+            }
+        }
+    }
+    
+    func startProgressTracking() {
+        progressTracker.startTracking()
+        print("[Mac4Mac WebSocket] ⏱️ Started progress tracking")
+        
+        // Send initial progress immediately
+        fetchAndBroadcastProgress()
+    }
+    
+    func stopProgressTracking() {
+        progressTracker.stopTracking()
+        print("[Mac4Mac WebSocket] ⏸️ Stopped progress tracking")
+    }
+    
+    func setProgressInterval(_ interval: TimeInterval) {
+        progressTracker.setUpdateInterval(interval)
+        print("[Mac4Mac WebSocket] ⏱️ Set progress interval to \(interval)s")
     }
     
     private func sendWebSocketMessage(to wsConnection: WebSocketConnection, message: WebSocketMessage) {
@@ -464,15 +648,12 @@ class Mac4MacWebSocketServer {
             "artist": artist,
             "album": album,
             "persistentID": persistentID as Any,
-            "isPlaying": isPlaying
+            "isPlaying": isPlaying,
+            "hasArtwork": artworkBase64 != nil
         ]
         
-        if let artworkBase64 = artworkBase64 {
-            messageData["artworkBase64"] = artworkBase64
-            messageData["hasArtwork"] = true
-        } else {
-            messageData["hasArtwork"] = false
-        }
+        // Don't send artwork via WebSocket - too large
+        // HTML client will fetch artwork via HTTP /artwork endpoint
         
         let message = WebSocketMessage(type: .trackUpdate, data: messageData)
         broadcast(message)
@@ -508,10 +689,12 @@ class Mac4MacWebSocketServer {
     }
     
     func stopServer() {
+        progressTracker.stopTracking()
         connections.forEach { $0.connection.cancel() }
         connections.removeAll()
         listener?.cancel()
         listener = nil
+        Mac4MacWebSocketServer.shared = nil
         print("[Mac4Mac WebSocket] 🛑 Server stopped")
     }
 }

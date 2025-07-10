@@ -29,6 +29,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var trackChangeMonitor = TrackChangeMonitor()
     let httpServer = Mac4MacHTTPServer()
     let webSocketServer = Mac4MacWebSocketServer()
+    let bonjourService = Mac4MacBonjourService()
     
     // Network permission helper
     private var permissionTriggerListener: NWListener?
@@ -55,7 +56,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             LogWriter.log("🌐 AppDelegate: Starting servers...")
             self?.httpServer.startServer()
             self?.webSocketServer.startServer()
-            LogWriter.log("✅ AppDelegate: Servers started")
+            self?.bonjourService.startAdvertising()
+            LogWriter.log("✅ AppDelegate: All servers started")
         }
         
         setupMenuBar()
@@ -269,6 +271,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     bitDepth: 32,
                     deviceName: AudioManager.getOutputDeviceName() ?? "Unknown"
                 )
+                
+                // Start progress tracking for new track
+                self.webSocketServer.startProgressTracking()
+                
                 LogWriter.log("✅ AppDelegate: WebSocket broadcast completed")
 
                 LogWriter.log("🎵 AppDelegate: ========================================")
@@ -278,11 +284,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         trackChangeMonitor.startMonitoring()
-        LogWriter.log("✅ AppDelegate: Track monitor setup completed")
+
+        // Force initial track update immediately after callback is set
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            LogWriter.log("🔄 AppDelegate: Forcing initial track update...")
+            self.trackChangeMonitor.forceTrackUpdate()
+        }
+
+        // Also force update after servers are fully up
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            LogWriter.log("🔄 AppDelegate: Second force update for good measure...")
+            self.trackChangeMonitor.forceTrackUpdate()
+        }
     }
 
     func updateMenu() {
         let menu = NSMenu()
+        // Add WebSocket test button
+        let wsTestItem = NSMenuItem(title: "📡 Test WebSocket", action: #selector(testWebSocket), keyEquivalent: "")
+        wsTestItem.target = self
+        menu.addItem(wsTestItem)
 
         let deviceName = AudioManager.getOutputDeviceName() ?? "Unknown"
         menu.addItem(withTitle: "🎧 Device: \(deviceName)", action: nil, keyEquivalent: "")
@@ -341,6 +362,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = menu
     }
 
+    @objc func testWebSocket() {
+        LogWriter.log("📡 Testing WebSocket broadcast...")
+        
+        // Send a test track update
+        webSocketServer.broadcastTrackUpdate(
+            trackName: "Test Track",
+            artist: "Test Artist",
+            album: "Test Album",
+            persistentID: "TEST123",
+            isPlaying: true,
+            artworkBase64: nil
+        )
+        
+        LogWriter.log("📡 Test WebSocket message sent")
+    }
+    
     @objc func overrideSampleRate(_ sender: NSMenuItem) {
         guard let rate = sender.representedObject as? Double else { return }
         AudioManager.setOutputSampleRate(to: rate)
@@ -375,6 +412,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         permissionTriggerListener?.cancel()
+        bonjourService.stopAdvertising()
         webSocketServer.stopServer()
     }
 }

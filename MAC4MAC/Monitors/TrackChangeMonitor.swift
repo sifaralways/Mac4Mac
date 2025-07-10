@@ -2,8 +2,9 @@ import Foundation
 import AppKit
 
 class TrackChangeMonitor {
-    private var lastTrackID: String?
+    var lastTrackID: String?
     private var timer: Timer?
+    private var artworkCache: [String: Data] = [:]
 
     struct TrackInfo {
         let name: String
@@ -25,17 +26,12 @@ class TrackChangeMonitor {
             tell application "Music"
                 if it is running then
                     try
-                        delay 0.2
                         if exists current track then
                             set t to current track
                             set trackName to name of t
                             set artistName to artist of t
                             set albumName to album of t
-                            if persistent ID of t is not missing value then
-                                set trackID to persistent ID of t
-                            else
-                                set trackID to "MISSING_ID"
-                            end if
+                            set trackID to persistent ID of t
                             return trackName & "||" & artistName & "||" & albumName & "||" & trackID
                         else
                             return "NO_TRACK"
@@ -73,40 +69,64 @@ class TrackChangeMonitor {
                         return
                     }
 
-                    let name = components[0]
-                    let artist = components[1]
-                    let album = components[2]
-                    let id = components[3]
+                    let name = components[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                    let artist = components[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                    let album = components[2].trimmingCharacters(in: .whitespacesAndNewlines)
+                    let id = components[3].trimmingCharacters(in: .whitespacesAndNewlines)
+                    
+                    // Ensure we have valid data
+                    let finalName = name.isEmpty ? "Unknown Track" : name
+                    let finalArtist = artist.isEmpty ? "Unknown Artist" : artist
+                    let finalAlbum = album.isEmpty ? "Unknown Album" : album
                     
                     LogWriter.log("🎯 TrackChangeMonitor: Current track ID: '\(id)', Last ID: '\(self.lastTrackID ?? "nil")'")
+                    LogWriter.log("📋 TrackChangeMonitor: Track details - Name: '\(finalName)', Artist: '\(finalArtist)', Album: '\(finalAlbum)'")
 
-                    if self.lastTrackID != id {
+                    if self.lastTrackID != id || self.lastTrackID == nil {
                         LogWriter.log("🔄 TrackChangeMonitor: Track changed detected!")
                         self.lastTrackID = id
                         
-                        // Fetch artwork using the working method
-                        LogWriter.log("🖼️ TrackChangeMonitor: Starting artwork fetch...")
-                        self.fetchArtworkFixed(for: id, trackName: name) { artworkData in
+                        // Check cache first
+                        if let cachedArtwork = self.artworkCache[id] {
+                            LogWriter.log("💾 TrackChangeMonitor: Using cached artwork for track \(id)")
                             let trackInfo = TrackInfo(
-                                name: name,
-                                artist: artist,
-                                album: album,
+                                name: finalName,
+                                artist: finalArtist,
+                                album: finalAlbum,
                                 persistentID: id,
-                                artworkData: artworkData
+                                artworkData: cachedArtwork
                             )
-                            
-                            LogWriter.log("🎶 TrackChangeMonitor: Track info created - calling onTrackChange callback")
-                            LogWriter.log("📋 TrackChangeMonitor: Track: \(name) by \(artist) from \(album)")
-                            
-                            if artworkData != nil {
-                                LogWriter.log("🖼️ TrackChangeMonitor: Artwork fetched successfully (\(artworkData!.count) bytes)")
-                            } else {
-                                LogWriter.log("⚠️ TrackChangeMonitor: No artwork found for current track")
-                            }
-                            
-                            // Call the callback
                             self.onTrackChange?(trackInfo)
-                            LogWriter.log("✅ TrackChangeMonitor: onTrackChange callback completed")
+                        } else {
+                            // Fetch artwork
+                            LogWriter.log("🖼️ TrackChangeMonitor: Starting artwork fetch for new track...")
+                            self.fetchArtworkFixed(for: id, trackName: finalName) { artworkData in
+                                // Cache the artwork (even if nil)
+                                if let artwork = artworkData {
+                                    self.artworkCache[id] = artwork
+                                    LogWriter.log("💾 TrackChangeMonitor: Cached artwork for track \(id)")
+                                }
+                                
+                                let trackInfo = TrackInfo(
+                                    name: finalName,
+                                    artist: finalArtist,
+                                    album: finalAlbum,
+                                    persistentID: id,
+                                    artworkData: artworkData
+                                )
+                                
+                                LogWriter.log("🎶 TrackChangeMonitor: Track info created - calling onTrackChange callback")
+                                
+                                if artworkData != nil {
+                                    LogWriter.log("🖼️ TrackChangeMonitor: Artwork fetched successfully (\(artworkData!.count) bytes)")
+                                } else {
+                                    LogWriter.log("⚠️ TrackChangeMonitor: No artwork found for current track")
+                                }
+                                
+                                // Call the callback
+                                self.onTrackChange?(trackInfo)
+                                LogWriter.log("✅ TrackChangeMonitor: onTrackChange callback completed")
+                            }
                         }
                     } else {
                         // Uncomment this line if you want to see when tracks haven't changed
@@ -132,13 +152,13 @@ class TrackChangeMonitor {
         let script = """
         tell application "Music"
             try
-                set t to some track of library playlist 1 whose persistent ID is "\(persistentID)"
+                set t to current track
+                set artworkCount to count of artworks of t
                 
-                -- Use the working method: check count first
-                if (count of artworks of t) > 0 then
+                if artworkCount > 0 then
                     set artworkData to data of artwork 1 of t
                     
-                    -- Save to temp file (no length check needed)
+                    -- Save to temp file
                     set fileRef to open for access POSIX file "\(tempFile.path)" with write permission
                     write artworkData to fileRef
                     close access fileRef
@@ -187,8 +207,16 @@ class TrackChangeMonitor {
                                 LogWriter.log("📸 fetchArtworkFixed: Confirmed JPEG format")
                             } else if artworkData.starts(with: [0x89, 0x50, 0x4E, 0x47]) {
                                 LogWriter.log("📸 fetchArtworkFixed: Confirmed PNG format")
-                            } else {
+                            } else if artworkData.count > 8 {
                                 LogWriter.log("❓ fetchArtworkFixed: Unknown format - first bytes: \(artworkData.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " "))")
+                                // Still try to use it
+                            } else {
+                                LogWriter.log("❌ fetchArtworkFixed: Artwork data too small: \(artworkData.count) bytes")
+                                try? FileManager.default.removeItem(at: tempFile)
+                                DispatchQueue.main.async {
+                                    completion(nil)
+                                }
+                                return
                             }
                             
                             // Clean up temp file
@@ -235,6 +263,17 @@ class TrackChangeMonitor {
         LogWriter.log("🛑 TrackChangeMonitor: Stopping monitoring...")
         timer?.invalidate()
         timer = nil
-        LogWriter.log("✅ TrackChangeMonitor: Monitoring stopped")
+        artworkCache.removeAll()
+        LogWriter.log("✅ TrackChangeMonitor: Monitoring stopped and cache cleared")
+    }
+    
+    func clearArtworkCache() {
+        artworkCache.removeAll()
+        LogWriter.log("🧹 TrackChangeMonitor: Artwork cache cleared")
+    }
+    
+    func forceTrackUpdate() {
+        LogWriter.log("🔄 TrackChangeMonitor: Forcing track update...")
+        lastTrackID = nil
     }
 }
