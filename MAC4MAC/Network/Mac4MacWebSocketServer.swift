@@ -33,38 +33,63 @@ class Mac4MacWebSocketServer {
     }
     
     class ProgressTracker {
-        var isTracking = false
-        var lastPosition: Double = 0
-        var trackDuration: Double = 0
-        var timer: Timer?
-        var updateInterval: TimeInterval = 1.0 // Default 1 second
+        private var isTracking = false
+        private var lastPosition: Double = 0
+        private var trackDuration: Double = 0
+        private var timer: Timer?
+        private var updateInterval: TimeInterval = 1.0
+        private let timerQueue = DispatchQueue(label: "com.mac4mac.timer", qos: .utility)
         
         func startTracking() {
-            stopTracking()
-            isTracking = true
-            
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.timer = Timer.scheduledTimer(withTimeInterval: self.updateInterval, repeats: true) { _ in
-                    Mac4MacWebSocketServer.shared?.fetchAndBroadcastProgress()
+            timerQueue.sync {
+                stopTrackingInternal() // Stop existing timer safely
+                isTracking = true
+                
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    self.timer = Timer.scheduledTimer(withTimeInterval: self.updateInterval, repeats: true) { _ in
+                        Mac4MacWebSocketServer.shared?.fetchAndBroadcastProgress()
+                    }
                 }
             }
             
-            LogWriter.log("⏱️ ProgressTracker: Started with \(updateInterval)s interval")
+            LogWriter.logNormal("Progress tracking started with \(updateInterval)s interval")
         }
         
         func stopTracking() {
-            timer?.invalidate()
-            timer = nil
+            timerQueue.sync {
+                stopTrackingInternal()
+            }
+        }
+        
+        private func stopTrackingInternal() {
+            if let currentTimer = timer {
+                DispatchQueue.main.async {
+                    currentTimer.invalidate()
+                }
+                timer = nil
+            }
             isTracking = false
-            LogWriter.log("⏸️ ProgressTracker: Stopped")
         }
         
         func setUpdateInterval(_ interval: TimeInterval) {
-            updateInterval = max(0.1, min(5.0, interval)) // Clamp between 0.1 and 5 seconds
-            if isTracking {
-                startTracking() // Restart with new interval
+            timerQueue.sync {
+                updateInterval = max(0.1, min(5.0, interval)) // Clamp between 0.1 and 5 seconds
+                if isTracking {
+                    stopTrackingInternal()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.startTracking()
+                    }
+                }
             }
+        }
+        
+        var trackingStatus: Bool {
+            return timerQueue.sync { isTracking }
+        }
+        
+        var currentUpdateInterval: TimeInterval {
+            return timerQueue.sync { updateInterval }
         }
     }
     
@@ -88,7 +113,7 @@ class Mac4MacWebSocketServer {
                 dict["data"] = data
                 return try JSONSerialization.data(withJSONObject: dict)
             } catch {
-                print("[Mac4Mac WebSocket] ❌ Failed to serialize message: \(error)")
+                LogWriter.logEssential("Failed to serialize WebSocket message: \(error)")
                 return nil
             }
         }
@@ -107,9 +132,9 @@ class Mac4MacWebSocketServer {
             
             listener?.start(queue: .global())
             Mac4MacWebSocketServer.shared = self
-            print("[Mac4Mac WebSocket] ✅ Started on port \(port)")
+            LogWriter.logEssential("WebSocket server started on port \(port)")
         } catch {
-            print("[Mac4Mac WebSocket] ❌ Failed to start: \(error)")
+            LogWriter.logEssential("Failed to start WebSocket server: \(error)")
         }
     }
     
@@ -118,7 +143,7 @@ class Mac4MacWebSocketServer {
         connections.append(wsConnection)
         connection.start(queue: .global())
         
-        print("[Mac4Mac WebSocket] 🔗 New connection \(wsConnection.id). Total: \(connections.count)")
+        LogWriter.logDebug("New WebSocket connection. Total: \(connections.count)")
         
         // Start receiving data for WebSocket handshake
         receiveData(from: wsConnection)
@@ -128,23 +153,20 @@ class Mac4MacWebSocketServer {
         wsConnection.connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, isComplete, error in
             
             if let error = error {
-                print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Receive error: \(error)")
+                LogWriter.logDebug("WebSocket receive error: \(error)")
                 self?.removeConnection(wsConnection)
                 return
             }
             
             if let data = data, !data.isEmpty {
                 if !wsConnection.isWebSocketUpgraded {
-                    print("[Mac4Mac WebSocket] [\(wsConnection.id)] 🤝 Processing handshake")
                     self?.handleWebSocketHandshake(data: data, wsConnection: wsConnection)
                 } else {
-                    print("[Mac4Mac WebSocket] [\(wsConnection.id)] 📨 Processing WebSocket frame")
                     self?.handleWebSocketFrame(data: data, wsConnection: wsConnection)
                 }
             }
             
             if isComplete {
-                print("[Mac4Mac WebSocket] [\(wsConnection.id)] 🔌 Connection completed normally")
                 self?.removeConnection(wsConnection)
                 return
             }
@@ -156,12 +178,9 @@ class Mac4MacWebSocketServer {
     
     private func handleWebSocketHandshake(data: Data, wsConnection: WebSocketConnection) {
         guard let request = String(data: data, encoding: .utf8) else {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Failed to decode handshake")
             removeConnection(wsConnection)
             return
         }
-        
-        print("[Mac4Mac WebSocket] [\(wsConnection.id)] 🤝 Handshake request:\n\(request.prefix(500))")
         
         // Parse WebSocket handshake
         let lines = request.components(separatedBy: "\r\n")
@@ -181,17 +200,12 @@ class Mac4MacWebSocketServer {
         }
         
         guard let key = webSocketKey, isWebSocketUpgrade, isConnectionUpgrade else {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Invalid WebSocket handshake")
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Key: \(webSocketKey ?? "nil"), Upgrade: \(isWebSocketUpgrade), Connection: \(isConnectionUpgrade)")
             removeConnection(wsConnection)
             return
         }
         
-        print("[Mac4Mac WebSocket] [\(wsConnection.id)] ✅ Valid handshake with key: \(key)")
-        
         // Generate WebSocket accept key
         let acceptKey = generateWebSocketAcceptKey(key: key)
-        print("[Mac4Mac WebSocket] [\(wsConnection.id)] 🔑 Generated accept key: \(acceptKey)")
         
         // Send WebSocket handshake response
         let response = """
@@ -204,16 +218,15 @@ class Mac4MacWebSocketServer {
         """
         
         if let responseData = response.data(using: .utf8) {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] 📤 Sending handshake response")
             wsConnection.connection.send(content: responseData, completion: .contentProcessed { error in
                 if let error = error {
-                    print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Failed to send handshake: \(error)")
+                    LogWriter.logDebug("Failed to send WebSocket handshake: \(error)")
                     self.removeConnection(wsConnection)
                 } else {
                     wsConnection.isWebSocketUpgraded = true
-                    print("[Mac4Mac WebSocket] [\(wsConnection.id)] ✅ WebSocket upgraded successfully!")
+                    LogWriter.logDebug("WebSocket connection upgraded successfully")
                     
-                    // Send initial messages with delay to prevent overwhelming
+                    // Send initial messages
                     DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
                         self.sendServerInfo(to: wsConnection)
                     }
@@ -263,10 +276,7 @@ class Mac4MacWebSocketServer {
     }
     
     private func handleWebSocketFrame(data: Data, wsConnection: WebSocketConnection) {
-        guard data.count >= 2 else {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Frame too short: \(data.count) bytes")
-            return
-        }
+        guard data.count >= 2 else { return }
         
         let firstByte = data[0]
         let secondByte = data[1]
@@ -278,39 +288,25 @@ class Mac4MacWebSocketServer {
         
         var offset = 2
         
-        print("[Mac4Mac WebSocket] [\(wsConnection.id)] 📊 Frame: FIN=\(fin), opcode=\(opcode), masked=\(masked), length=\(payloadLength)")
-        
         // Handle extended payload length
         if payloadLength == 126 {
-            guard data.count >= 4 else {
-                print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Extended length frame too short")
-                return
-            }
+            guard data.count >= 4 else { return }
             payloadLength = Int(data[2]) << 8 | Int(data[3])
             offset = 4
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] 📊 Extended length: \(payloadLength)")
         } else if payloadLength == 127 {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ 64-bit length not supported")
-            return
+            return // 64-bit length not supported
         }
         
         // Handle masking key
         var maskingKey: [UInt8] = []
         if masked {
-            guard data.count >= offset + 4 else {
-                print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Masked frame too short for key")
-                return
-            }
+            guard data.count >= offset + 4 else { return }
             maskingKey = Array(data[offset..<offset+4])
             offset += 4
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] 🔑 Masking key: \(maskingKey.map { String(format: "%02x", $0) }.joined())")
         }
         
         // Extract payload
-        guard data.count >= offset + payloadLength else {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Frame too short for payload: need \(offset + payloadLength), have \(data.count)")
-            return
-        }
+        guard data.count >= offset + payloadLength else { return }
         var payload = Array(data[offset..<offset+payloadLength])
         
         // Unmask payload if needed
@@ -324,32 +320,24 @@ class Mac4MacWebSocketServer {
         switch opcode {
         case 1: // Text frame
             if let messageString = String(data: Data(payload), encoding: .utf8) {
-                print("[Mac4Mac WebSocket] [\(wsConnection.id)] 📝 Received text: \(messageString)")
-                
                 if let messageData = messageString.data(using: .utf8),
                    let json = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] {
                     handleIncomingMessage(json, from: wsConnection)
-                } else {
-                    print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Failed to parse JSON")
                 }
-            } else {
-                print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Failed to decode text payload")
             }
             
         case 8: // Close frame
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] 👋 Client requested close")
             sendCloseFrame(to: wsConnection)
             removeConnection(wsConnection)
             
         case 9: // Ping frame
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] 🏓 Received ping")
             sendPongFrame(to: wsConnection, payload: payload)
             
         case 10: // Pong frame
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] 🏓 Received pong")
+            break // Pong received
             
         default:
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❓ Unknown opcode: \(opcode)")
+            break // Unknown opcode
         }
     }
     
@@ -373,11 +361,8 @@ class Mac4MacWebSocketServer {
     private func handleIncomingMessage(_ json: [String: Any], from wsConnection: WebSocketConnection) {
         guard let typeString = json["type"] as? String,
               let messageType = MessageType(rawValue: typeString) else {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Invalid message type")
             return
         }
-        
-        print("[Mac4Mac WebSocket] [\(wsConnection.id)] 📨 Handling message type: \(messageType)")
         
         switch messageType {
         case .remoteCommand:
@@ -398,21 +383,18 @@ class Mac4MacWebSocketServer {
                 "status": "alive",
                 "connections": connections.filter { $0.isWebSocketUpgraded }.count,
                 "serverTime": ISO8601DateFormatter().string(from: Date()),
-                "progressTracking": progressTracker.isTracking
+                "progressTracking": progressTracker.trackingStatus
             ])
             sendWebSocketMessage(to: wsConnection, message: response)
         default:
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ℹ️ Unhandled message type: \(messageType)")
+            break
         }
     }
     
     private func handleRemoteCommand(_ data: [String: Any]) {
-        guard let command = data["command"] as? String else {
-            print("[Mac4Mac WebSocket] ❌ No command in remote command data")
-            return
-        }
+        guard let command = data["command"] as? String else { return }
         
-        print("[Mac4Mac WebSocket] 🎮 Received remote command: \(command)")
+        LogWriter.logNormal("Remote command: \(command)")
         
         switch command {
         case "play_pause":
@@ -436,17 +418,12 @@ class Mac4MacWebSocketServer {
                 setProgressInterval(interval)
             }
         default:
-            print("[Mac4Mac WebSocket] ❓ Unknown command: \(command)")
+            break
         }
     }
     
     private func handleSeekCommand(_ data: [String: Any]) {
-        guard let position = data["position"] as? Double else {
-            print("[Mac4Mac WebSocket] ❌ No position in seek command")
-            return
-        }
-        
-        print("[Mac4Mac WebSocket] ⏭️ Seeking to position: \(position)")
+        guard let position = data["position"] as? Double else { return }
         
         let script = "tell application \"Music\" to set player position to \(position)"
         executeAppleScript(script)
@@ -458,14 +435,9 @@ class Mac4MacWebSocketServer {
     }
     
     private func handleVolumeCommand(_ data: [String: Any]) {
-        guard let volume = data["volume"] as? Int else {
-            print("[Mac4Mac WebSocket] ❌ No volume in volume command")
-            return
-        }
+        guard let volume = data["volume"] as? Int else { return }
         
         let clampedVolume = max(0, min(100, volume))
-        print("[Mac4Mac WebSocket] 🔊 Setting volume to: \(clampedVolume)")
-        
         let script = "tell application \"Music\" to set sound volume to \(clampedVolume)"
         executeAppleScript(script)
     }
@@ -478,9 +450,8 @@ class Mac4MacWebSocketServer {
         do {
             try task.run()
             task.waitUntilExit()
-            print("[Mac4Mac WebSocket] ✅ Executed AppleScript command successfully")
         } catch {
-            print("[Mac4Mac WebSocket] ❌ Failed to execute command: \(error)")
+            LogWriter.logEssential("Failed to execute AppleScript: \(error)")
         }
     }
     
@@ -538,7 +509,7 @@ class Mac4MacWebSocketServer {
                         
                         // Adjust tracking interval based on play state
                         let newInterval: TimeInterval = isPlaying ? 1.0 : 5.0
-                        if abs(newInterval - self.progressTracker.updateInterval) > 0.1 {
+                        if abs(newInterval - self.progressTracker.currentUpdateInterval) > 0.1 {
                             self.progressTracker.setUpdateInterval(newInterval)
                         }
                         
@@ -556,14 +527,13 @@ class Mac4MacWebSocketServer {
                     }
                 }
             } catch {
-                print("[Mac4Mac WebSocket] ❌ Failed to fetch progress: \(error)")
+                LogWriter.logDebug("Failed to fetch progress: \(error)")
             }
         }
     }
     
     func startProgressTracking() {
         progressTracker.startTracking()
-        print("[Mac4Mac WebSocket] ⏱️ Started progress tracking")
         
         // Send initial progress immediately
         fetchAndBroadcastProgress()
@@ -571,35 +541,25 @@ class Mac4MacWebSocketServer {
     
     func stopProgressTracking() {
         progressTracker.stopTracking()
-        print("[Mac4Mac WebSocket] ⏸️ Stopped progress tracking")
     }
     
     func setProgressInterval(_ interval: TimeInterval) {
         progressTracker.setUpdateInterval(interval)
-        print("[Mac4Mac WebSocket] ⏱️ Set progress interval to \(interval)s")
     }
     
     private func sendWebSocketMessage(to wsConnection: WebSocketConnection, message: WebSocketMessage) {
-        guard wsConnection.isWebSocketUpgraded else {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Cannot send - not upgraded")
-            return
-        }
+        guard wsConnection.isWebSocketUpgraded else { return }
         
         guard let jsonData = message.toJSON(),
               let jsonString = String(data: jsonData, encoding: .utf8) else {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Failed to serialize message")
             return
         }
         
-        print("[Mac4Mac WebSocket] [\(wsConnection.id)] 📤 Sending: \(message.type.rawValue)")
         sendWebSocketText(to: wsConnection, text: jsonString)
     }
     
     private func sendWebSocketText(to wsConnection: WebSocketConnection, text: String) {
-        guard let textData = text.data(using: .utf8) else {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Failed to encode text")
-            return
-        }
+        guard let textData = text.data(using: .utf8) else { return }
         
         let payloadLength = textData.count
         var frame = Data()
@@ -615,21 +575,16 @@ class Mac4MacWebSocketServer {
             frame.append(UInt8(payloadLength >> 8))
             frame.append(UInt8(payloadLength & 0xFF))
         } else {
-            print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Payload too large: \(payloadLength)")
-            return
+            return // Payload too large
         }
         
         // Payload
         frame.append(textData)
         
-        print("[Mac4Mac WebSocket] [\(wsConnection.id)] 📤 Sending frame: \(frame.count) bytes")
-        
         wsConnection.connection.send(content: frame, completion: .contentProcessed { error in
             if let error = error {
-                print("[Mac4Mac WebSocket] [\(wsConnection.id)] ❌ Send failed: \(error)")
+                LogWriter.logDebug("WebSocket send failed: \(error)")
                 self.removeConnection(wsConnection)
-            } else {
-                print("[Mac4Mac WebSocket] [\(wsConnection.id)] ✅ Message sent successfully")
             }
         })
     }
@@ -637,7 +592,7 @@ class Mac4MacWebSocketServer {
     private func removeConnection(_ wsConnection: WebSocketConnection) {
         connections.removeAll { $0.id == wsConnection.id }
         wsConnection.connection.cancel()
-        print("[Mac4Mac WebSocket] [\(wsConnection.id)] 🗑️ Removed. Total: \(connections.count)")
+        LogWriter.logDebug("Removed WebSocket connection. Total: \(connections.count)")
     }
     
     // MARK: - Public Methods for Broadcasting Updates
@@ -651,9 +606,6 @@ class Mac4MacWebSocketServer {
             "isPlaying": isPlaying,
             "hasArtwork": artworkBase64 != nil
         ]
-        
-        // Don't send artwork via WebSocket - too large
-        // HTML client will fetch artwork via HTTP /artwork endpoint
         
         let message = WebSocketMessage(type: .trackUpdate, data: messageData)
         broadcast(message)
@@ -681,7 +633,6 @@ class Mac4MacWebSocketServer {
     
     private func broadcast(_ message: WebSocketMessage) {
         let activeConnections = connections.filter { $0.isWebSocketUpgraded }
-        print("[Mac4Mac WebSocket] 📡 Broadcasting \(message.type.rawValue) to \(activeConnections.count) clients")
         
         activeConnections.forEach { wsConnection in
             sendWebSocketMessage(to: wsConnection, message: message)
@@ -695,6 +646,6 @@ class Mac4MacWebSocketServer {
         listener?.cancel()
         listener = nil
         Mac4MacWebSocketServer.shared = nil
-        print("[Mac4Mac WebSocket] 🛑 Server stopped")
+        LogWriter.logEssential("WebSocket server stopped")
     }
 }

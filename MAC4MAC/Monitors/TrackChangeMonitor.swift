@@ -5,7 +5,18 @@ class TrackChangeMonitor {
     var lastTrackID: String?
     private var timer: Timer?
     private var artworkCache: [String: Data] = [:]
-
+    private var trackInfoCache: [String: CachedTrackInfo] = [:]
+    
+    // Track state for each track ID to prevent duplicate callbacks
+    private var trackStates: [String: TrackState] = [:]
+    
+    struct TrackState {
+        var hasTrackInfo: Bool = false
+        var hasArtwork: Bool = false
+        var hasSentInitialCallback: Bool = false
+        var hasSentFullCallback: Bool = false
+    }
+    
     struct TrackInfo {
         let name: String
         let artist: String
@@ -13,267 +24,444 @@ class TrackChangeMonitor {
         let persistentID: String
         let artworkData: Data?
     }
+    
+    struct CachedTrackInfo {
+        let name: String
+        let artist: String
+        let album: String
+        let timestamp: Date
+        
+        var isExpired: Bool {
+            Date().timeIntervalSince(timestamp) > 300 // 5 minutes cache
+        }
+    }
 
     var onTrackChange: ((TrackInfo) -> Void)?
 
     func startMonitoring() {
-        LogWriter.log("🎯 TrackChangeMonitor: Starting monitoring...")
+        LogWriter.logEssential("Track change monitoring started")
         
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            LogWriter.log("🔄 TrackChangeMonitor: Timer tick - checking for track changes...")
-            
-            let script = """
-            tell application "Music"
-                if it is running then
-                    try
-                        if exists current track then
-                            set t to current track
+            self.checkForTrackChange()
+        }
+    }
+    
+    private func checkForTrackChange() {
+        // STEP 1: Quick check for track ID change (lightweight AppleScript)
+        let quickCheckScript = """
+        tell application "Music"
+            if it is running then
+                try
+                    if exists current track then
+                        return persistent ID of current track
+                    else
+                        return "NO_TRACK"
+                    end if
+                on error errMsg
+                    return "ERROR"
+                end try
+            else
+                return "NOT_RUNNING"
+            end if
+        end tell
+        """
+
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", quickCheckScript]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.launch()
+        task.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !output.isEmpty && !output.hasPrefix("ERROR") && output != "NOT_RUNNING" && output != "NO_TRACK" else {
+            return
+        }
+
+        let currentTrackID = output
+        
+        // Check if track actually changed
+        guard self.lastTrackID != currentTrackID else {
+            return // Same track, no action needed
+        }
+        
+        LogWriter.logEssential("Track change detected: \(currentTrackID)")
+        LogWriter.logEssential("🚀 STARTING PRIORITY SEQUENCE:")
+        self.lastTrackID = currentTrackID
+        
+        // STEP 2: PRIORITY 1 - Immediate sample rate sync (CRITICAL PATH)
+        LogWriter.logEssential("🚨 PRIORITY 1: Sample rate sync (CRITICAL)")
+        self.handleSampleRateSync(for: currentTrackID)
+        
+        // STEP 3: PRIORITY 2 - Fetch track info (async, for remote app)
+        LogWriter.logNormal("📊 PRIORITY 2: Track info (PARALLEL)")
+        self.handleTrackInfoFetch(for: currentTrackID)
+        
+        // STEP 4: PRIORITY 3 - Fetch artwork (async, heavy operation)
+        LogWriter.logNormal("🖼️ PRIORITY 3: Artwork (PARALLEL)")
+        self.handleArtworkFetch(for: currentTrackID)
+    }
+    
+    // PRIORITY 1: Critical path - sample rate sync (IMMEDIATE)
+    private func handleSampleRateSync(for trackID: String) {
+        // Initialize track state
+        if trackStates[trackID] == nil {
+            trackStates[trackID] = TrackState()
+        }
+        
+        // Only send initial callback once per track
+        guard let state = trackStates[trackID], !state.hasSentInitialCallback else {
+            return
+        }
+        
+        // Use cached track name if available, otherwise use generic name
+        let trackName = trackInfoCache[trackID]?.name ?? "Current Track"
+        
+        // IMMEDIATE: Trigger callback for sample rate sync (don't wait for detection)
+        let minimalTrackInfo = TrackInfo(
+            name: trackName,
+            artist: "Loading...",
+            album: "Loading...",
+            persistentID: trackID,
+            artworkData: nil
+        )
+        
+        // Mark as sent and call immediately - this triggers sample rate detection in AppDelegate
+        trackStates[trackID]?.hasSentInitialCallback = true
+        DispatchQueue.main.async { [weak self] in
+            self?.onTrackChange?(minimalTrackInfo)
+        }
+    }
+    
+    // PRIORITY 2: Track info for remote app (async)
+    private func handleTrackInfoFetch(for trackID: String) {
+        LogWriter.logNormal("📊 PARALLEL: Starting track info fetch")
+        
+        // Check cache first
+        if let cachedInfo = trackInfoCache[trackID], !cachedInfo.isExpired {
+            LogWriter.logDebug("Using cached track info for \(trackID)")
+            updateWithCachedInfo(trackID: trackID, cachedInfo: cachedInfo)
+            return
+        }
+        
+        DispatchQueue.global().async { [weak self] in
+            self?.fetchTrackInfo(for: trackID)
+        }
+    }
+    
+    // PRIORITY 3: Artwork fetch (async, lowest priority)
+    private func handleArtworkFetch(for trackID: String) {
+        LogWriter.logNormal("🖼️ PARALLEL: Starting artwork fetch")
+        
+        // Check artwork cache first
+        if let cachedArtwork = artworkCache[trackID] {
+            LogWriter.logDebug("Using cached artwork for \(trackID)")
+            // Mark artwork as ready for this track
+            if trackStates[trackID] == nil {
+                trackStates[trackID] = TrackState()
+            }
+            trackStates[trackID]?.hasArtwork = true
+            return // Artwork already cached
+        }
+        
+        DispatchQueue.global().async { [weak self] in
+            self?.fetchArtwork(for: trackID)
+        }
+    }
+    
+    private func fetchTrackInfo(for trackID: String) {
+        let script = """
+        tell application "Music"
+            if it is running then
+                try
+                    if exists current track then
+                        set t to current track
+                        if persistent ID of t is "\(trackID)" then
                             set trackName to name of t
                             set artistName to artist of t
                             set albumName to album of t
-                            set trackID to persistent ID of t
-                            return trackName & "||" & artistName & "||" & albumName & "||" & trackID
+                            return trackName & "||" & artistName & "||" & albumName
                         else
-                            return "NO_TRACK"
+                            return "TRACK_CHANGED"
                         end if
-                    on error errMsg
-                        return "ERROR: " & errMsg
-                    end try
-                else
-                    return "NOT_RUNNING"
-                end if
-            end tell
-            """
+                    else
+                        return "NO_TRACK"
+                    end if
+                on error errMsg
+                    return "ERROR"
+                end try
+            else
+                return "NOT_RUNNING"
+            end if
+        end tell
+        """
 
-            let task = Process()
-            task.launchPath = "/usr/bin/osascript"
-            task.arguments = ["-e", script]
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", script]
 
-            let pipe = Pipe()
-            task.standardOutput = pipe
-            task.launch()
-            task.waitUntilExit()
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.launch()
+        task.waitUntilExit()
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) {
-                
-                LogWriter.log("🎵 TrackChangeMonitor: AppleScript output: '\(output)'")
-                
-                if !output.isEmpty && !output.hasPrefix("ERROR") && output != "NOT_RUNNING" && output != "NO_TRACK" {
-                    let components = output.components(separatedBy: "||")
-                    LogWriter.log("📊 TrackChangeMonitor: Parsed \(components.count) components: \(components)")
-                    
-                    guard components.count == 4 else {
-                        LogWriter.log("⚠️ TrackChangeMonitor: Unexpected component count, expected 4, got \(components.count)")
-                        return
-                    }
-
-                    let name = components[0].trimmingCharacters(in: .whitespacesAndNewlines)
-                    let artist = components[1].trimmingCharacters(in: .whitespacesAndNewlines)
-                    let album = components[2].trimmingCharacters(in: .whitespacesAndNewlines)
-                    let id = components[3].trimmingCharacters(in: .whitespacesAndNewlines)
-                    
-                    // Ensure we have valid data
-                    let finalName = name.isEmpty ? "Unknown Track" : name
-                    let finalArtist = artist.isEmpty ? "Unknown Artist" : artist
-                    let finalAlbum = album.isEmpty ? "Unknown Album" : album
-                    
-                    LogWriter.log("🎯 TrackChangeMonitor: Current track ID: '\(id)', Last ID: '\(self.lastTrackID ?? "nil")'")
-                    LogWriter.log("📋 TrackChangeMonitor: Track details - Name: '\(finalName)', Artist: '\(finalArtist)', Album: '\(finalAlbum)'")
-
-                    if self.lastTrackID != id || self.lastTrackID == nil {
-                        LogWriter.log("🔄 TrackChangeMonitor: Track changed detected!")
-                        self.lastTrackID = id
-                        
-                        // Check cache first
-                        if let cachedArtwork = self.artworkCache[id] {
-                            LogWriter.log("💾 TrackChangeMonitor: Using cached artwork for track \(id)")
-                            let trackInfo = TrackInfo(
-                                name: finalName,
-                                artist: finalArtist,
-                                album: finalAlbum,
-                                persistentID: id,
-                                artworkData: cachedArtwork
-                            )
-                            self.onTrackChange?(trackInfo)
-                        } else {
-                            // Fetch artwork
-                            LogWriter.log("🖼️ TrackChangeMonitor: Starting artwork fetch for new track...")
-                            self.fetchArtworkFixed(for: id, trackName: finalName) { artworkData in
-                                // Cache the artwork (even if nil)
-                                if let artwork = artworkData {
-                                    self.artworkCache[id] = artwork
-                                    LogWriter.log("💾 TrackChangeMonitor: Cached artwork for track \(id)")
-                                }
-                                
-                                let trackInfo = TrackInfo(
-                                    name: finalName,
-                                    artist: finalArtist,
-                                    album: finalAlbum,
-                                    persistentID: id,
-                                    artworkData: artworkData
-                                )
-                                
-                                LogWriter.log("🎶 TrackChangeMonitor: Track info created - calling onTrackChange callback")
-                                
-                                if artworkData != nil {
-                                    LogWriter.log("🖼️ TrackChangeMonitor: Artwork fetched successfully (\(artworkData!.count) bytes)")
-                                } else {
-                                    LogWriter.log("⚠️ TrackChangeMonitor: No artwork found for current track")
-                                }
-                                
-                                // Call the callback
-                                self.onTrackChange?(trackInfo)
-                                LogWriter.log("✅ TrackChangeMonitor: onTrackChange callback completed")
-                            }
-                        }
-                    } else {
-                        // Uncomment this line if you want to see when tracks haven't changed
-                        // LogWriter.log("➡️ TrackChangeMonitor: Same track, no change")
-                    }
-                } else {
-                    LogWriter.log("⚠️ TrackChangeMonitor: Invalid output: '\(output)'")
-                }
-            } else {
-                LogWriter.log("❌ TrackChangeMonitor: No output from AppleScript")
-            }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !output.isEmpty && !output.hasPrefix("ERROR") && output != "NOT_RUNNING" && output != "NO_TRACK" && output != "TRACK_CHANGED" else {
+            LogWriter.logDebug("Failed to fetch track info or track changed during fetch")
+            return
         }
-        
-        LogWriter.log("✅ TrackChangeMonitor: Timer scheduled successfully")
-    }
 
-    private func fetchArtworkFixed(for persistentID: String, trackName: String, completion: @escaping (Data?) -> Void) {
-        LogWriter.log("🖼️ fetchArtworkFixed: Starting for track '\(trackName)' with ID '\(persistentID)'")
+        let components = output.components(separatedBy: "||")
+        guard components.count == 3 else {
+            LogWriter.logDebug("Invalid track info format")
+            return
+        }
+
+        let name = components[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let artist = components[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        let album = components[2].trimmingCharacters(in: .whitespacesAndNewlines)
         
+        let finalName = name.isEmpty ? "Unknown Track" : name
+        let finalArtist = artist.isEmpty ? "Unknown Artist" : artist
+        let finalAlbum = album.isEmpty ? "Unknown Album" : album
+        
+        // Cache the track info
+        let cachedInfo = CachedTrackInfo(
+            name: finalName,
+            artist: finalArtist,
+            album: finalAlbum,
+            timestamp: Date()
+        )
+        trackInfoCache[trackID] = cachedInfo
+        
+        // Mark track info as ready
+        if trackStates[trackID] == nil {
+            trackStates[trackID] = TrackState()
+        }
+        trackStates[trackID]?.hasTrackInfo = true
+        
+        LogWriter.logNormal("Track info fetched: \(finalName) by \(finalArtist)")
+        LogWriter.logNormal("📊 PARALLEL: Track info fetch completed")
+        
+        // Check if we can send full update
+        DispatchQueue.main.async { [weak self] in
+            self?.checkAndSendFullUpdate(for: trackID)
+        }
+    }
+    
+    private func fetchArtwork(for trackID: String) {
         let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("mac4mac_artwork_\(UUID().uuidString).jpg")
-        LogWriter.log("📁 fetchArtworkFixed: Temp file path: \(tempFile.path)")
         
         let script = """
         tell application "Music"
             try
-                set t to current track
-                set artworkCount to count of artworks of t
-                
-                if artworkCount > 0 then
-                    set artworkData to data of artwork 1 of t
-                    
-                    -- Save to temp file
-                    set fileRef to open for access POSIX file "\(tempFile.path)" with write permission
-                    write artworkData to fileRef
-                    close access fileRef
-                    
-                    return "SUCCESS"
+                if exists current track then
+                    set t to current track
+                    if persistent ID of t is "\(trackID)" then
+                        set artworkCount to count of artworks of t
+                        
+                        if artworkCount > 0 then
+                            set artworkData to data of artwork 1 of t
+                            
+                            set fileRef to open for access POSIX file "\(tempFile.path)" with write permission
+                            write artworkData to fileRef
+                            close access fileRef
+                            
+                            return "SUCCESS"
+                        else
+                            return "NO_ARTWORK"
+                        end if
+                    else
+                        return "TRACK_CHANGED"
+                    end if
                 else
-                    return "NO_ARTWORK"
+                    return "NO_TRACK"
                 end if
             on error errMsg
                 try
                     close access fileRef
                 end try
-                return "ERROR:" & errMsg
+                return "ERROR"
             end try
         end tell
         """
 
-        DispatchQueue.global().async {
-            LogWriter.log("🔄 fetchArtworkFixed: Executing AppleScript on background thread...")
-            
-            let task = Process()
-            task.launchPath = "/usr/bin/osascript"
-            task.arguments = ["-e", script]
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", script]
 
-            let pipe = Pipe()
-            task.standardOutput = pipe
-            task.standardError = pipe
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        
+        do {
+            try task.run()
+            task.waitUntilExit()
             
-            do {
-                try task.run()
-                task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) {
                 
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let output = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) {
-                    
-                    LogWriter.log("🖼️ fetchArtworkFixed: AppleScript result: '\(output)'")
-                    
-                    if output == "SUCCESS" {
-                        do {
-                            let artworkData = try Data(contentsOf: tempFile)
-                            LogWriter.log("✅ fetchArtworkFixed: Artwork loaded successfully: \(artworkData.count) bytes")
-                            
-                            // Verify it's a valid image
-                            if artworkData.starts(with: [0xFF, 0xD8, 0xFF]) {
-                                LogWriter.log("📸 fetchArtworkFixed: Confirmed JPEG format")
-                            } else if artworkData.starts(with: [0x89, 0x50, 0x4E, 0x47]) {
-                                LogWriter.log("📸 fetchArtworkFixed: Confirmed PNG format")
-                            } else if artworkData.count > 8 {
-                                LogWriter.log("❓ fetchArtworkFixed: Unknown format - first bytes: \(artworkData.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " "))")
-                                // Still try to use it
-                            } else {
-                                LogWriter.log("❌ fetchArtworkFixed: Artwork data too small: \(artworkData.count) bytes")
-                                try? FileManager.default.removeItem(at: tempFile)
-                                DispatchQueue.main.async {
-                                    completion(nil)
-                                }
-                                return
-                            }
-                            
-                            // Clean up temp file
+                if output == "SUCCESS" {
+                    do {
+                        let artworkData = try Data(contentsOf: tempFile)
+                        
+                        // Verify it's valid image data
+                        guard artworkData.count > 8 else {
+                            LogWriter.logDebug("Artwork data too small")
                             try? FileManager.default.removeItem(at: tempFile)
-                            LogWriter.log("🧹 fetchArtworkFixed: Temp file cleaned up")
-                            
-                            DispatchQueue.main.async {
-                                LogWriter.log("📤 fetchArtworkFixed: Calling completion with artwork data")
-                                completion(artworkData)
-                            }
-                        } catch {
-                            LogWriter.log("❌ fetchArtworkFixed: Failed to read artwork file: \(error.localizedDescription)")
-                            try? FileManager.default.removeItem(at: tempFile)
-                            DispatchQueue.main.async {
-                                LogWriter.log("📤 fetchArtworkFixed: Calling completion with nil (read error)")
-                                completion(nil)
-                            }
+                            return
                         }
-                    } else {
-                        LogWriter.log("⚠️ fetchArtworkFixed: No artwork or error: \(output)")
-                        DispatchQueue.main.async {
-                            LogWriter.log("📤 fetchArtworkFixed: Calling completion with nil (no artwork)")
-                            completion(nil)
+                        
+                        // Cache the artwork
+                        artworkCache[trackID] = artworkData
+                        
+                        // Mark artwork as ready
+                        if trackStates[trackID] == nil {
+                            trackStates[trackID] = TrackState()
                         }
+                        trackStates[trackID]?.hasArtwork = true
+                        
+                        LogWriter.logNormal("Artwork cached for track (\(artworkData.count) bytes)")
+                        LogWriter.logNormal("🖼️ PARALLEL: Artwork fetch completed")
+                        
+                        // Clean up temp file
+                        try? FileManager.default.removeItem(at: tempFile)
+                        
+                        // 🖼️ Send artwork update to remote clients
+                        DispatchQueue.main.async { [weak self] in
+                            self?.sendArtworkUpdate(for: trackID, artworkData: artworkData)
+                        }
+                    } catch {
+                        LogWriter.logDebug("Failed to read artwork file: \(error.localizedDescription)")
+                        try? FileManager.default.removeItem(at: tempFile)
                     }
                 } else {
-                    LogWriter.log("❌ fetchArtworkFixed: No output from artwork AppleScript")
-                    DispatchQueue.main.async {
-                        LogWriter.log("📤 fetchArtworkFixed: Calling completion with nil (no output)")
-                        completion(nil)
+                    LogWriter.logDebug("No artwork available: \(output)")
+                    // Mark artwork as "ready" (even though it's nil) so full update can proceed
+                    if trackStates[trackID] == nil {
+                        trackStates[trackID] = TrackState()
                     }
-                }
-            } catch {
-                LogWriter.log("❌ fetchArtworkFixed: Failed to execute artwork script: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    LogWriter.log("📤 fetchArtworkFixed: Calling completion with nil (execution error)")
-                    completion(nil)
+                    trackStates[trackID]?.hasArtwork = true
+                    
+                    LogWriter.logDebug("🖼️ No artwork available for this track")
+                    // Don't send artwork update if there's no artwork
                 }
             }
+        } catch {
+            LogWriter.logDebug("Failed to execute artwork script: \(error.localizedDescription)")
+            // Mark artwork as "ready" (failed) so full update can proceed
+            if trackStates[trackID] == nil {
+                trackStates[trackID] = TrackState()
+            }
+            trackStates[trackID]?.hasArtwork = true
+            
+            LogWriter.logDebug("🖼️ Artwork fetch failed for this track")
+            // Don't send artwork update if artwork fetch failed
         }
     }
-
+    
+    // Smart callback system - only send full update once when track info is ready
+    private func checkAndSendFullUpdate(for trackID: String) {
+        guard let state = trackStates[trackID] else { return }
+        
+        // Only send full update once, and only when we have track info
+        if state.hasTrackInfo && !state.hasSentFullCallback {
+            trackStates[trackID]?.hasSentFullCallback = true
+            
+            guard let cachedInfo = trackInfoCache[trackID] else { return }
+            let artworkData = artworkCache[trackID] // May be nil, that's OK
+            
+            let trackInfo = TrackInfo(
+                name: cachedInfo.name,
+                artist: cachedInfo.artist,
+                album: cachedInfo.album,
+                persistentID: trackID,
+                artworkData: artworkData
+            )
+            
+            LogWriter.logEssential("📱 PHASE 1 READY: \(cachedInfo.name) by \(cachedInfo.artist)")
+            onTrackChange?(trackInfo)
+        }
+    }
+    
+    // Send artwork update without triggering full track processing
+    private func sendArtworkUpdate(for trackID: String, artworkData: Data) {
+        guard let cachedInfo = trackInfoCache[trackID] else {
+            LogWriter.logDebug("No track info available for artwork update")
+            return
+        }
+        
+        // Only send artwork update if we already sent the initial track info
+        guard let state = trackStates[trackID], state.hasSentFullCallback else {
+            LogWriter.logDebug("Track info not sent yet, artwork will be included in full update")
+            return
+        }
+        
+        let trackInfo = TrackInfo(
+            name: cachedInfo.name,
+            artist: cachedInfo.artist,
+            album: cachedInfo.album,
+            persistentID: trackID,
+            artworkData: artworkData
+        )
+        
+        LogWriter.logEssential("🖼️ ARTWORK UPDATE: Sending artwork for \(cachedInfo.name)")
+        onTrackChange?(trackInfo)
+    }
+    
+    private func updateWithCachedInfo(trackID: String, cachedInfo: CachedTrackInfo) {
+        // For cached info, send immediate full update
+        if trackStates[trackID] == nil {
+            trackStates[trackID] = TrackState()
+        }
+        
+        guard let state = trackStates[trackID], !state.hasSentFullCallback else {
+            return // Already sent full update
+        }
+        
+        trackStates[trackID]?.hasTrackInfo = true
+        trackStates[trackID]?.hasSentFullCallback = true
+        
+        let artworkData = artworkCache[trackID]
+        
+        let trackInfo = TrackInfo(
+            name: cachedInfo.name,
+            artist: cachedInfo.artist,
+            album: cachedInfo.album,
+            persistentID: trackID,
+            artworkData: artworkData
+        )
+        
+        LogWriter.logEssential("📱 PHASE 1 CACHED: \(cachedInfo.name) by \(cachedInfo.artist)")
+        DispatchQueue.main.async { [weak self] in
+            self?.onTrackChange?(trackInfo)
+        }
+    }
     func stopMonitoring() {
-        LogWriter.log("🛑 TrackChangeMonitor: Stopping monitoring...")
+        LogWriter.logEssential("Track change monitoring stopped")
         timer?.invalidate()
         timer = nil
         artworkCache.removeAll()
-        LogWriter.log("✅ TrackChangeMonitor: Monitoring stopped and cache cleared")
+        trackInfoCache.removeAll()
+        trackStates.removeAll()
     }
     
-    func clearArtworkCache() {
+    func clearCaches() {
         artworkCache.removeAll()
-        LogWriter.log("🧹 TrackChangeMonitor: Artwork cache cleared")
+        trackInfoCache.removeAll()
+        trackStates.removeAll()
+        LogWriter.logNormal("Track and artwork caches cleared")
     }
     
     func forceTrackUpdate() {
-        LogWriter.log("🔄 TrackChangeMonitor: Forcing track update...")
+        LogWriter.logNormal("Forcing track update check")
         lastTrackID = nil
+        trackStates.removeAll()
     }
 }

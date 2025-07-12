@@ -11,7 +11,7 @@ class Mac4MacBonjourService {
     }
     
     func startAdvertising() {
-        LogWriter.log("📡 Bonjour: Starting service advertisement...")
+        LogWriter.logEssential("Starting Bonjour service advertisement")
         
         // Create TXT record with service capabilities
         let txtRecord = createTXTRecord()
@@ -31,9 +31,9 @@ class Mac4MacBonjourService {
             bonjourListener?.serviceRegistrationUpdateHandler = { update in
                 switch update {
                 case .add(let endpoint):
-                    LogWriter.log("✅ Bonjour: Service registered - \(endpoint)")
+                    LogWriter.logNormal("Bonjour service registered: \(endpoint)")
                 case .remove(let endpoint):
-                    LogWriter.log("⚠️ Bonjour: Service removed - \(endpoint)")
+                    LogWriter.logDebug("Bonjour service removed: \(endpoint)")
                 @unknown default:
                     break
                 }
@@ -42,9 +42,9 @@ class Mac4MacBonjourService {
             bonjourListener?.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    LogWriter.log("✅ Bonjour: Service ready for discovery")
+                    LogWriter.logNormal("Bonjour service ready for discovery")
                 case .failed(let error):
-                    LogWriter.log("❌ Bonjour: Service failed - \(error)")
+                    LogWriter.logEssential("Bonjour service failed: \(error)")
                 default:
                     break
                 }
@@ -56,17 +56,17 @@ class Mac4MacBonjourService {
             }
             
             bonjourListener?.start(queue: .global())
-            LogWriter.log("📡 Bonjour: Advertising Mac4Mac service as '\(serviceName)'")
+            LogWriter.logEssential("Advertising Mac4Mac service as '\(serviceName)'")
             
         } catch {
-            LogWriter.log("❌ Bonjour: Failed to start advertising - \(error)")
+            LogWriter.logEssential("Failed to start Bonjour advertising: \(error)")
         }
     }
     
     func stopAdvertising() {
         bonjourListener?.cancel()
         bonjourListener = nil
-        LogWriter.log("🛑 Bonjour: Stopped advertising")
+        LogWriter.logEssential("Stopped Bonjour advertising")
     }
     
     private func createTXTRecord() -> NWTXTRecord {
@@ -88,7 +88,7 @@ class Mac4MacBonjourService {
         let model = getComputerModel()
         txtRecord["deviceModel"] = model
         
-        LogWriter.log("📋 Bonjour: Created TXT record with capabilities")
+        LogWriter.logDebug("Created Bonjour TXT record with capabilities")
         return txtRecord
     }
     

@@ -69,16 +69,16 @@ class Mac4MacHTTPServer {
             }
             
             listener?.start(queue: .global())
-            print("[Mac4Mac HTTP Server] Started on port \(port)")
+            LogWriter.logEssential("HTTP server started on port \(port)")
         } catch {
-            print("[Mac4Mac HTTP Server] Failed to start: \(error)")
+            LogWriter.logEssential("Failed to start HTTP server: \(error)")
         }
     }
     
     func stopServer() {
         listener?.cancel()
         listener = nil
-        print("[Mac4Mac HTTP Server] Stopped")
+        LogWriter.logEssential("HTTP server stopped")
     }
     
     private func handleConnection(_ connection: NWConnection) {
@@ -273,7 +273,7 @@ class Mac4MacHTTPServer {
                 }
             }
         } catch {
-            print("[Mac4Mac HTTP Server] ❌ Failed to fetch progress: \(error)")
+            LogWriter.logDebug("Failed to fetch progress: \(error)")
         }
         
         // Fallback response
@@ -344,7 +344,7 @@ class Mac4MacHTTPServer {
             return
         }
         
-        print("[Mac4Mac HTTP Server] 🎮 Received control command: \(command)")
+        LogWriter.logNormal("HTTP remote command: \(command)")
         
         let result = executeControlCommand(command: command, parameters: json)
         
@@ -535,8 +535,7 @@ class Mac4MacHTTPServer {
             artworkBase64: artworkBase64
         )
         
-        let artworkStatus = artworkBase64 != nil ? "with artwork" : "without artwork"
-        print("[Mac4Mac HTTP Server] Updated track: \(trackName) by \(artist) \(artworkStatus)")
+        LogWriter.logDebug("HTTP server updated track: \(trackName) by \(artist)")
     }
     
     /// Update audio configuration - call this from AudioManager
@@ -553,7 +552,7 @@ class Mac4MacHTTPServer {
             artworkBase64: currentTrackData.artworkBase64 // Keep existing artwork
         )
         
-        print("[Mac4Mac HTTP Server] Updated audio config: \(String(format: "%.1f", sampleRate / 1000.0)) kHz, \(bitDepth)-bit, \(deviceName)")
+        LogWriter.logDebug("HTTP server updated audio config: \(String(format: "%.1f", sampleRate / 1000.0)) kHz")
     }
     
     /// Update only the playing state - useful for play/pause detection
@@ -569,8 +568,6 @@ class Mac4MacHTTPServer {
             audioDevice: currentTrackData.audioDevice,
             artworkBase64: currentTrackData.artworkBase64 // Keep existing artwork
         )
-        
-        print("[Mac4Mac HTTP Server] Updated playing state: \(isPlaying ? "Playing" : "Paused")")
     }
     
     /// Get current track data - useful for debugging
