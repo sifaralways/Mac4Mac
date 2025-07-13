@@ -85,31 +85,41 @@ class Mac4MacHTTPServer {
         connection.start(queue: .global())
         
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [weak self] data, _, isComplete, error in
+            guard let self = self else {
+                connection.cancel()
+                return
+            }
+            
+            if let error = error {
+                LogWriter.logDebug("HTTP connection error: \(error)")
+                connection.cancel()
+                return
+            }
+            
             if let data = data, !data.isEmpty {
                 let request = String(data: data, encoding: .utf8) ?? ""
                 
                 if request.contains("GET /track") {
-                    self?.sendTrackData(connection: connection)
+                    self.sendTrackData(connection: connection)
                 } else if request.contains("GET /artwork") {
-                    self?.sendArtwork(connection: connection)
+                    self.sendArtwork(connection: connection)
                 } else if request.contains("GET /status") {
-                    self?.sendStatus(connection: connection)
+                    self.sendStatus(connection: connection)
                 } else if request.contains("GET /audio") {
-                    self?.sendAudioInfo(connection: connection)
+                    self.sendAudioInfo(connection: connection)
                 } else if request.contains("GET /progress") {
-                    self?.sendProgress(connection: connection)
+                    self.sendProgress(connection: connection)
                 } else if request.contains("GET /control") {
-                    self?.sendControlInfo(connection: connection)
+                    self.sendControlInfo(connection: connection)
                 } else if request.contains("POST /control") {
-                    self?.handleControlCommand(connection: connection, request: request)
+                    self.handleControlCommand(connection: connection, request: request)
                 } else if request.contains("GET /") {
-                    self?.sendWelcome(connection: connection)
+                    self.sendWelcome(connection: connection)
                 } else {
-                    self?.sendNotFound(connection: connection)
+                    self.sendNotFound(connection: connection)
                 }
-            }
-            
-            if isComplete {
+            } else {
+                // No data received, close connection
                 connection.cancel()
             }
         }
@@ -304,7 +314,7 @@ class Mac4MacHTTPServer {
                 "play_pause": "Toggle play/pause state",
                 "next_track": "Skip to next track",
                 "previous_track": "Go to previous track",
-                "stop": "Stop playback",
+                "stop": "Stop playbook",
                 "seek": "Seek to position (requires position parameter)",
                 "volume": "Set volume (requires volume parameter 0-100)"
             ],

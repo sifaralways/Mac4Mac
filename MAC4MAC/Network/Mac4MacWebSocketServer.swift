@@ -4,7 +4,11 @@ import CommonCrypto
 
 class Mac4MacWebSocketServer {
     private var listener: NWListener?
-    private var connections: [WebSocketConnection] = []
+    
+    // CRASH FIX: Thread-safe connections
+    private let connectionsQueue = DispatchQueue(label: "com.mac4mac.connections", attributes: .concurrent)
+    private var _connections: [WebSocketConnection] = []
+    
     private let port: UInt16 = 8990
     private var progressTracker = ProgressTracker()
     static weak var shared: Mac4MacWebSocketServer?
@@ -47,8 +51,9 @@ class Mac4MacWebSocketServer {
                 
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
-                    self.timer = Timer.scheduledTimer(withTimeInterval: self.updateInterval, repeats: true) { _ in
-                        Mac4MacWebSocketServer.shared?.fetchAndBroadcastProgress()
+                    // CRASH FIX: Remove retain cycle
+                    self.timer = Timer.scheduledTimer(withTimeInterval: self.updateInterval, repeats: true) { [weak self] _ in
+                        self?.fetchAndBroadcastProgress()
                     }
                 }
             }
@@ -91,6 +96,11 @@ class Mac4MacWebSocketServer {
         var currentUpdateInterval: TimeInterval {
             return timerQueue.sync { updateInterval }
         }
+        
+        // CRASH FIX: Add fetchAndBroadcastProgress method to avoid external dependency
+        private func fetchAndBroadcastProgress() {
+            Mac4MacWebSocketServer.shared?.fetchAndBroadcastProgress()
+        }
     }
     
     struct WebSocketMessage {
@@ -119,13 +129,34 @@ class Mac4MacWebSocketServer {
         }
     }
     
+    // CRASH FIX: Thread-safe connections access
+    private var connections: [WebSocketConnection] {
+        return connectionsQueue.sync { _connections }
+    }
+    
+    private func addConnection(_ connection: WebSocketConnection) {
+        connectionsQueue.async(flags: .barrier) { [weak self] in
+            self?._connections.append(connection)
+        }
+    }
+    
+    private func removeConnection(_ wsConnection: WebSocketConnection) {
+        connectionsQueue.async(flags: .barrier) { [weak self] in
+            self?._connections.removeAll { $0.id == wsConnection.id }
+        }
+        // CRASH FIX: Cancel on separate queue
+        DispatchQueue.global().async {
+            wsConnection.connection.cancel()
+        }
+        LogWriter.logDebug("Removed WebSocket connection. Total: \(connections.count)")
+    }
+    
     func startServer() {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         
         do {
             listener = try NWListener(using: parameters, on: NWEndpoint.Port(integerLiteral: port))
-            
             listener?.newConnectionHandler = { [weak self] connection in
                 self?.handleNewConnection(connection)
             }
@@ -140,7 +171,7 @@ class Mac4MacWebSocketServer {
     
     private func handleNewConnection(_ connection: NWConnection) {
         let wsConnection = WebSocketConnection(connection: connection)
-        connections.append(wsConnection)
+        addConnection(wsConnection)
         connection.start(queue: .global())
         
         LogWriter.logDebug("New WebSocket connection. Total: \(connections.count)")
@@ -150,29 +181,32 @@ class Mac4MacWebSocketServer {
     }
     
     private func receiveData(from wsConnection: WebSocketConnection) {
-        wsConnection.connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, isComplete, error in
+        // CRASH FIX: Add weak references
+        wsConnection.connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self, weak wsConnection] data, _, isComplete, error in
+            
+            guard let self = self, let wsConnection = wsConnection else { return }
             
             if let error = error {
                 LogWriter.logDebug("WebSocket receive error: \(error)")
-                self?.removeConnection(wsConnection)
+                self.removeConnection(wsConnection)
                 return
             }
             
             if let data = data, !data.isEmpty {
                 if !wsConnection.isWebSocketUpgraded {
-                    self?.handleWebSocketHandshake(data: data, wsConnection: wsConnection)
+                    self.handleWebSocketHandshake(data: data, wsConnection: wsConnection)
                 } else {
-                    self?.handleWebSocketFrame(data: data, wsConnection: wsConnection)
+                    self.handleWebSocketFrame(data: data, wsConnection: wsConnection)
                 }
             }
             
             if isComplete {
-                self?.removeConnection(wsConnection)
+                self.removeConnection(wsConnection)
                 return
             }
             
             // Continue receiving
-            self?.receiveData(from: wsConnection)
+            self.receiveData(from: wsConnection)
         }
     }
     
@@ -218,7 +252,10 @@ class Mac4MacWebSocketServer {
         """
         
         if let responseData = response.data(using: .utf8) {
-            wsConnection.connection.send(content: responseData, completion: .contentProcessed { error in
+            // CRASH FIX: Add weak references in completion
+            wsConnection.connection.send(content: responseData, completion: .contentProcessed { [weak self, weak wsConnection] error in
+                guard let self = self, let wsConnection = wsConnection else { return }
+                
                 if let error = error {
                     LogWriter.logDebug("Failed to send WebSocket handshake: \(error)")
                     self.removeConnection(wsConnection)
@@ -227,10 +264,12 @@ class Mac4MacWebSocketServer {
                     LogWriter.logDebug("WebSocket connection upgraded successfully")
                     
                     // Send initial messages
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { [weak self, weak wsConnection] in
+                        guard let self = self, let wsConnection = wsConnection else { return }
                         self.sendServerInfo(to: wsConnection)
                     }
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { [weak self, weak wsConnection] in
+                        guard let self = self, let wsConnection = wsConnection else { return }
                         let welcome = WebSocketMessage(type: .heartbeat, data: [
                             "message": "Connected to Mac4Mac",
                             "status": "ready",
@@ -581,18 +620,15 @@ class Mac4MacWebSocketServer {
         // Payload
         frame.append(textData)
         
-        wsConnection.connection.send(content: frame, completion: .contentProcessed { error in
+        // CRASH FIX: Add weak reference in completion
+        wsConnection.connection.send(content: frame, completion: .contentProcessed { [weak self, weak wsConnection] error in
+            guard let self = self, let wsConnection = wsConnection else { return }
+            
             if let error = error {
                 LogWriter.logDebug("WebSocket send failed: \(error)")
                 self.removeConnection(wsConnection)
             }
         })
-    }
-    
-    private func removeConnection(_ wsConnection: WebSocketConnection) {
-        connections.removeAll { $0.id == wsConnection.id }
-        wsConnection.connection.cancel()
-        LogWriter.logDebug("Removed WebSocket connection. Total: \(connections.count)")
     }
     
     // MARK: - Public Methods for Broadcasting Updates
@@ -606,6 +642,9 @@ class Mac4MacWebSocketServer {
             "isPlaying": isPlaying,
             "hasArtwork": artworkBase64 != nil
         ]
+        
+        // Add the actual artwork data to the message
+        messageData["artworkBase64"] = artworkBase64
         
         let message = WebSocketMessage(type: .trackUpdate, data: messageData)
         broadcast(message)
@@ -641,8 +680,15 @@ class Mac4MacWebSocketServer {
     
     func stopServer() {
         progressTracker.stopTracking()
-        connections.forEach { $0.connection.cancel() }
-        connections.removeAll()
+        // CRASH FIX: Thread-safe cleanup
+        connectionsQueue.async(flags: .barrier) { [weak self] in
+            let connectionsToCancel = self?._connections ?? []
+            self?._connections.removeAll()
+            
+            DispatchQueue.global().async {
+                connectionsToCancel.forEach { $0.connection.cancel() }
+            }
+        }
         listener?.cancel()
         listener = nil
         Mac4MacWebSocketServer.shared = nil
