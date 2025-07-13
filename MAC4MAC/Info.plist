@@ -5,6 +5,12 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Used to analyze system audio from BlackHole</string>
 	<key>CFBundleIconFile</key>
-	<string>Mac4Mac</string>
+	<string>Mac4Mac</string><key>NSLocalNetworkUsageDescription</key>
+    <string>Mac4Mac creates a local server to share music information with your iOS devices</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_mac4mac._tcp</string>
+        <string>_http._tcp</string>
+    </array>
 </dict>
 </plist>

@@ -2,8 +2,14 @@ import Foundation
 import CoreAudio
 
 class AudioManager {
-    static func setOutputSampleRate(to sampleRate: Double) {
-        LogWriter.log("🎚️ Attempting to set sample rate to \(sampleRate) Hz")
+    static func setOutputSampleRate(to sampleRate: Double) -> Bool {
+        // Don't attempt to change if sampleRate is 0 (indicates detection failure)
+        guard sampleRate > 0 else {
+            LogWriter.logNormal("Sample rate detection failed - keeping current rate")
+            return false
+        }
+        
+        LogWriter.logEssential("🚨 CRITICAL: Attempting to set sample rate to \(sampleRate) Hz")
 
         var deviceID = AudioDeviceID(0)
         var size = UInt32(MemoryLayout.size(ofValue: deviceID))
@@ -20,11 +26,11 @@ class AudioManager {
                                                 &deviceID)
 
         guard status == noErr else {
-            LogWriter.log("❌ Failed to get output device (status: \(status))")
-            return
+            LogWriter.logEssential("Failed to get output device (status: \(status))")
+            return false
         }
 
-        LogWriter.log("🎛️ Default output device ID: \(deviceID)")
+        LogWriter.logDebug("Default output device ID: \(deviceID)")
 
         var rate = sampleRate
         let rateSize = UInt32(MemoryLayout.size(ofValue: rate))
@@ -41,9 +47,11 @@ class AudioManager {
                                                   &rate)
 
         if setStatus == noErr {
-            LogWriter.log("✅ Changed sample rate to \(rate)")
+            LogWriter.logEssential("🚨 CRITICAL: ✅ Sample rate changed to \(rate) Hz")
+            return true
         } else {
-            LogWriter.log("❌ Failed to change sample rate (code: \(setStatus))")
+            LogWriter.logEssential("🚨 CRITICAL: ❌ Failed to change sample rate (code: \(setStatus))")
+            return false
         }
     }
 
@@ -164,7 +172,7 @@ class AudioManager {
             if range.mMinimum == range.mMaximum {
                 sampleRates.append(range.mMinimum)
             } else {
-                // For ranges, add min and max as possible values (or any logic you prefer)
+                // For ranges, add min and max as possible values
                 sampleRates.append(range.mMinimum)
                 sampleRates.append(range.mMaximum)
             }

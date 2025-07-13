@@ -11,6 +11,7 @@ import Foundation
 enum FeatureToggle: String, CaseIterable {
     case logging
     case playlistManagement
+    case httpServer
     case futureDSPEnhancement
     case aiAnalysis
 
@@ -18,6 +19,7 @@ enum FeatureToggle: String, CaseIterable {
         switch self {
         case .logging: return "Verbose Logging"
         case .playlistManagement: return "Playlist Creation"
+        case .httpServer: return "HTTP Server"
         case .futureDSPEnhancement: return "Real-Time DSP"
         case .aiAnalysis: return "AI Analysis"
         }
