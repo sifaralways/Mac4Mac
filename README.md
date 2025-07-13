@@ -20,10 +20,10 @@ MAC4MAC is a complete audio control ecosystem: a lightweight menu bar app that a
 2. **Connect** to your Mac automatically or manually
 3. **Control** your music from anywhere in your home
 4. **Enjoy** Live Activities in your Dynamic Island!
-![image](https://github.com/user-attachments/assets/11c2c81e-ed2c-4712-9eba-3bd9fba765fa)
-![image](https://github.com/user-attachments/assets/428150ad-4d5a-4bf4-b10c-a9773eae2239)
-![image](https://github.com/user-attachments/assets/b338601c-b48f-4e7e-9cca-357ef55fedf7)
-![image](https://github.com/user-attachments/assets/d567aace-2260-4862-90cb-610ee244ffa2)
+
+
+![image](https://github.com/user-attachments/assets/11c2c81e-ed2c-4712-9eba-3bd9fba765fa)  ![image](https://github.com/user-attachments/assets/428150ad-4d5a-4bf4-b10c-a9773eae2239) 
+![image](https://github.com/user-attachments/assets/b338601c-b48f-4e7e-9cca-357ef55fedf7)  ![image](https://github.com/user-attachments/assets/d567aace-2260-4862-90cb-610ee244ffa2) 
 
 > **Requires macOS Monterey (12.0) or later • iOS 16.0+ for remote features**
 
