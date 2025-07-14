@@ -44,7 +44,7 @@ class LogMonitor {
             LogWriter.logEssential("❌ Failed to start log stream: \(error)")
         }
     }
-
+    //using stream now
     private static func parseLogLine(_ line: String) {
         guard line.contains("activeFormat:") else { return }
 
