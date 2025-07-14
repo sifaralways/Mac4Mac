@@ -15,15 +15,24 @@ MAC4MAC is a complete audio control ecosystem: a lightweight menu bar app that a
 4. **Grant permissions** when prompted (needed to detect track changes)
 5. **Play music** and watch the magic happen!
 
+| App Menu | Feature Toggles | Logging|
+|:--------------:|:-------:|:-------------:|
+| ![image](https://github.com/user-attachments/assets/7b159bcc-0524-4339-86a9-a8469c6d3d10) | ![image](https://github.com/user-attachments/assets/2503a310-e6fd-46c1-9727-65d3bcb4d653) | ![image](https://github.com/user-attachments/assets/52bb1403-83d7-478f-9238-8ea866b864ee) | 
+
+
+
+
+
+
 ### iOS Remote App Coming Soon (Premium)
 1. **Download** MAC4MAC Remote from the App Store
 2. **Connect** to your Mac automatically or manually
 3. **Control** your music from anywhere in your home
 4. **Enjoy** Live Activities in your Dynamic Island!
 
-
-![image](https://github.com/user-attachments/assets/11c2c81e-ed2c-4712-9eba-3bd9fba765fa)  ![image](https://github.com/user-attachments/assets/428150ad-4d5a-4bf4-b10c-a9773eae2239) 
-![image](https://github.com/user-attachments/assets/b338601c-b48f-4e7e-9cca-357ef55fedf7)  ![image](https://github.com/user-attachments/assets/d567aace-2260-4862-90cb-610ee244ffa2) 
+| Server Discovery | 44.1 kHz | 96 kHz | 192 kHz |
+|:--------------:|:-------:|:-------------:|:-------------:|
+| ![image](https://github.com/user-attachments/assets/11c2c81e-ed2c-4712-9eba-3bd9fba765fa) | ![image](https://github.com/user-attachments/assets/428150ad-4d5a-4bf4-b10c-a9773eae2239) |![image](https://github.com/user-attachments/assets/b338601c-b48f-4e7e-9cca-357ef55fedf7) | ![image](https://github.com/user-attachments/assets/d567aace-2260-4862-90cb-610ee244ffa2) |
 
 > **Requires macOS Monterey (12.0) or later • iOS 16.0+ for remote features**
 
