@@ -111,6 +111,8 @@ class Mac4MacHTTPServer {
                     self.sendProgress(connection: connection)
                 } else if request.contains("GET /control") {
                     self.sendControlInfo(connection: connection)
+                } else if request.contains("GET /queue") {
+                    self.sendQueueData(connection: connection, request: request)
                 } else if request.contains("POST /control") {
                     self.handleControlCommand(connection: connection, request: request)
                 } else if request.contains("GET /") {
@@ -172,7 +174,8 @@ class Mac4MacHTTPServer {
                 "/status": "Server status and capabilities",
                 "/audio": "Audio device information",
                 "/progress": "Current playback progress and volume",
-                "/control": "Remote control commands"
+                "/control": "Remote control commands",
+                "/queue": "Current playlist queue with pagination"
             ],
             "capabilities": [
                 "track_updates": true,
@@ -218,6 +221,153 @@ class Mac4MacHTTPServer {
         }
     }
     
+    private func sendQueueData(connection: NWConnection, request: String) {
+        // Parse query parameters for pagination
+        let offset = extractQueryParameter(from: request, parameter: "offset") ?? "0"
+        let limit = extractQueryParameter(from: request, parameter: "limit") ?? "50"
+        
+        guard let offsetInt = Int(offset), let limitInt = Int(limit) else {
+            sendError(connection: connection, error: "Invalid offset or limit parameters")
+            return
+        }
+        
+        // Clamp values for safety
+        let safeOffset = max(0, offsetInt)
+        let safeLimit = max(1, min(100, limitInt)) // Max 100 items per request
+        let endIndex = safeOffset + safeLimit
+        
+        let script = """
+        tell application "Music"
+            if it is running then
+                try
+                    if exists current playlist then
+                        set queueTracks to {}
+                        set totalCount to count of tracks of current playlist
+                        
+                        -- Calculate end index without min function
+                        set endIndex to \(endIndex)
+                        if totalCount < endIndex then set endIndex to totalCount
+                        
+                        -- Get requested range of tracks
+                        repeat with i from \(safeOffset + 1) to endIndex
+                            set currentTrack to track i of current playlist
+                            set trackInfo to (name of currentTrack) & "|" & (artist of currentTrack) & "|" & (album of currentTrack) & "|" & (persistent ID of currentTrack)
+                            set end of queueTracks to trackInfo
+                        end repeat
+                        
+                        -- Format response: totalCount,trackInfo1,trackInfo2,...
+                        set result to (totalCount as string)
+                        repeat with trackInfo in queueTracks
+                            set result to result & "," & trackInfo
+                        end repeat
+                        
+                        return result
+                    else
+                        return "0"
+                    end if
+                on error
+                    return "0"
+                end try
+            else
+                return "0"
+            end if
+        end tell
+        """
+        
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", script]
+        
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        
+        do {
+            try task.run()
+            task.waitUntilExit()
+            
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                
+                let components = output.components(separatedBy: ",")
+                guard let totalCount = Int(components.first ?? "0") else {
+                    sendError(connection: connection, error: "Failed to parse queue data")
+                    return
+                }
+                
+                var tracks: [[String: Any]] = []
+                
+                // Parse track data (skip first component which is totalCount)
+                for i in 1..<components.count {
+                    let trackParts = components[i].components(separatedBy: "|")
+                    if trackParts.count >= 4 {
+                        let track = [
+                            "name": trackParts[0],
+                            "artist": trackParts[1], 
+                            "album": trackParts[2],
+                            "persistentID": trackParts[3],
+                            "queueIndex": safeOffset + (i - 1)
+                        ] as [String: Any]
+                        tracks.append(track)
+                    }
+                }
+                
+                let queueData = [
+                    "tracks": tracks,
+                    "pagination": [
+                        "offset": safeOffset,
+                        "limit": safeLimit,
+                        "total": totalCount,
+                        "hasMore": endIndex < totalCount
+                    ],
+                    "queueInfo": [
+                        "currentPlaylistName": "Current Playlist", // Could be enhanced to get actual name
+                        "totalTracks": totalCount
+                    ]
+                ] as [String: Any]
+                
+                do {
+                    let jsonData = try JSONSerialization.data(withJSONObject: queueData)
+                    let response = createHTTPResponse(data: jsonData, contentType: "application/json")
+                    connection.send(content: response, completion: .contentProcessed { _ in
+                        connection.cancel()
+                    })
+                } catch {
+                    sendError(connection: connection, error: "Failed to create queue response")
+                }
+            } else {
+                sendError(connection: connection, error: "No queue data available")
+            }
+        } catch {
+            sendError(connection: connection, error: "Failed to fetch queue data")
+        }
+    }
+    
+    private func extractQueryParameter(from request: String, parameter: String) -> String? {
+        let lines = request.components(separatedBy: .newlines)
+        guard let firstLine = lines.first else { return nil }
+        
+        let urlPattern = "GET /queue\\?([^ ]+)"
+        let regex = try? NSRegularExpression(pattern: urlPattern)
+        let range = NSRange(firstLine.startIndex..<firstLine.endIndex, in: firstLine)
+        
+        guard let match = regex?.firstMatch(in: firstLine, range: range),
+              let queryRange = Range(match.range(at: 1), in: firstLine) else {
+            return nil
+        }
+        
+        let queryString = String(firstLine[queryRange])
+        let parameters = queryString.components(separatedBy: "&")
+        
+        for param in parameters {
+            let keyValue = param.components(separatedBy: "=")
+            if keyValue.count == 2 && keyValue[0] == parameter {
+                return keyValue[1].removingPercentEncoding
+            }
+        }
+        
+        return nil
+    }
+
     private func sendProgress(connection: NWConnection) {
         let script = """
         tell application "Music"
@@ -448,7 +598,8 @@ class Mac4MacHTTPServer {
                 "/status": "Server status and capabilities",
                 "/audio": "Audio device information",
                 "/progress": "Current playback progress and volume",
-                "/control": "Remote control commands (GET for info, POST for execution)"
+                "/control": "Remote control commands (GET for info, POST for execution)",
+                "/queue": "Current playlist queue with pagination (supports ?offset=0&limit=50)"
             },
             "capabilities": {
                 "track_updates": "Real-time track change detection",
@@ -478,12 +629,12 @@ class Mac4MacHTTPServer {
     }
     
     private func sendNotFound(connection: NWConnection, message: String? = nil) {
-        let notFoundMessage = message ?? "Available endpoints: /track, /artwork, /status, /audio, /progress, /control"
+        let notFoundMessage = message ?? "Available endpoints: /track, /artwork, /status, /audio, /progress, /control, /queue"
         let notFound = """
         {
             "error": "Not Found",
             "message": "\(notFoundMessage)",
-            "availableEndpoints": ["/track", "/artwork", "/status", "/audio", "/progress", "/control"]
+            "availableEndpoints": ["/track", "/artwork", "/status", "/audio", "/progress", "/control", "/queue"]
         }
         """
         
