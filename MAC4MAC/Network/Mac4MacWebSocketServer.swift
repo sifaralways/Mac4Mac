@@ -306,7 +306,7 @@ class Mac4MacWebSocketServer {
         
         // Use CommonCrypto for SHA1
         var hash = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
-        data.withUnsafeBytes { bytes in
+        _ = data.withUnsafeBytes { bytes in
             CC_SHA1(bytes.baseAddress, CC_LONG(data.count), &hash)
         }
         
@@ -320,7 +320,7 @@ class Mac4MacWebSocketServer {
         let firstByte = data[0]
         let secondByte = data[1]
         
-        let fin = (firstByte & 0x80) != 0
+        let _ = (firstByte & 0x80) != 0  // fin bit - not used in this implementation
         let opcode = firstByte & 0x0F
         let masked = (secondByte & 0x80) != 0
         var payloadLength = Int(secondByte & 0x7F)

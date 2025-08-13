@@ -47,10 +47,10 @@ class AudioManager {
                                                   &rate)
 
         if setStatus == noErr {
-            LogWriter.logEssential("🚨 CRITICAL: ✅ Sample rate changed to \(rate) Hz")
+            LogWriter.logDebug("Sample rate successfully changed to \(rate) Hz")
             return true
         } else {
-            LogWriter.logEssential("🚨 CRITICAL: ❌ Failed to change sample rate (code: \(setStatus))")
+            LogWriter.logDebug("Failed to change sample rate (status code: \(setStatus))")
             return false
         }
     }

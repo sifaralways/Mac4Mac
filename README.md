@@ -14,6 +14,7 @@ MAC4MAC is a complete audio control ecosystem: a lightweight menu bar app that a
 3. **Launch** the app — you'll see a 🎵 icon in your menu bar
 4. **Grant permissions** when prompted (needed to detect track changes)
 5. **Play music** and watch the magic happen!
+6. **LogViewer** helps you analyse if it is not working for you
 
 | App Menu | Feature Toggles | Logging|
 |:--------------:|:-------:|:-------------:|

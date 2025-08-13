@@ -1,6 +1,7 @@
 import AppKit
 import ScriptingBridge
 import Network
+import SwiftUI
 
 // MARK: - Music ScriptingBridge Protocols
 
@@ -31,6 +32,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let webSocketServer = Mac4MacWebSocketServer()
     let bonjourService = Mac4MacBonjourService()
     
+    // LogReader window
+    var logReaderWindow: NSWindow?
+    var logReaderWindowDelegate: LogReaderWindowDelegate?
+    
     // Track the last processed track to detect artwork updates
     private var lastProcessedTrackID: String?
     
@@ -38,6 +43,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissionTriggerListener: NWListener?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Migrate old log file to new daily rotation system (one-time operation)
+        LogWriter.migrateOldLogFileIfNeeded()
+        
         LogWriter.logEssential("Mac4Mac launched successfully")
 
         // Set log level based on feature toggle
@@ -185,14 +193,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         trackChangeMonitor.onTrackChange = { [weak self] trackInfo in
             guard let self = self else { return }
 
-            LogWriter.logEssential("Track: \(trackInfo.name) by \(trackInfo.artist)")
-            
             // Check if this is a minimal callback (for sample rate sync) or full callback
             let isMinimalCallback = trackInfo.artist == "Loading..." && trackInfo.album == "Loading..."
             
             // Check if this is an artwork update (same track, but with artwork)
             let isArtworkUpdate = trackInfo.artworkData != nil &&
                                  self.lastProcessedTrackID == trackInfo.persistentID
+            
+            // For full track info (not minimal callbacks), log the updated track separator with full details
+            if !isMinimalCallback && !isArtworkUpdate {
+                LogWriter.logTrackSeparator(trackName: trackInfo.name, artist: trackInfo.artist, album: trackInfo.album, sampleRate: self.currentSampleRate)
+            }
             
             if isMinimalCallback {
                 // PRIORITY 1: Handle sample rate sync immediately
@@ -241,9 +252,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if rate > 0 {
                     // Update audio output if rate is different
                     if abs(rate - self.currentSampleRate) >= 0.5 {
-                        LogWriter.logEssential("📡 Audio output change needed: \(self.currentSampleRate) Hz → \(rate) Hz")
-                        
+                        let oldRate = self.currentSampleRate
                         let success = AudioManager.setOutputSampleRate(to: rate)
+                        
+                        // Use new enhanced sample rate change logging
+                        LogWriter.logSampleRateChange(from: oldRate, to: rate, succeeded: success)
+                        
                         if success {
                             self.currentSampleRate = rate
                             
@@ -252,10 +266,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                 self.updateStatusBarTitle()
                                 self.updateMenu()
                             }
-                            
-                            LogWriter.logEssential("🚨 PRIORITY: Sample rate synced to \(rate) Hz")
-                        } else {
-                            LogWriter.logEssential("❌ FAILED: Could not change audio output sample rate")
                         }
                     } else {
                         LogWriter.logNormal("🔍 Audio output unchanged (\(rate) Hz)")
@@ -413,6 +423,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(midiItem)
         menu.addItem(NSMenuItem.separator())
 
+        // Log Reader menu item
+        let logReaderItem = NSMenuItem(title: "🔍 Open Log Reader", action: #selector(openLogReader), keyEquivalent: "l")
+        logReaderItem.target = self
+        menu.addItem(logReaderItem)
+        menu.addItem(NSMenuItem.separator())
+
         let toggleMenu = NSMenu()
         for feature in FeatureToggle.allCases {
             let state = FeatureToggleManager.isEnabled(feature)
@@ -449,7 +465,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func overrideSampleRate(_ sender: NSMenuItem) {
         guard let rate = sender.representedObject as? Double else { return }
+        let oldRate = currentSampleRate
         let success = AudioManager.setOutputSampleRate(to: rate)
+        
+        // Use new enhanced sample rate change logging
+        LogWriter.logSampleRateChange(from: oldRate, to: rate, succeeded: success)
+        
         if success {
             currentSampleRate = rate
             updateStatusBarTitle()
@@ -486,6 +507,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func quitApp() {
         NSApp.terminate(nil)
     }
+    
+    @objc func openLogReader() {
+        // If window already exists, bring it to front
+        if let existingWindow = logReaderWindow {
+            existingWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        
+        // Create new LogReader window
+        let logReaderView = LogReaderView()
+        let hostingController = NSHostingController(rootView: logReaderView)
+        
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 1200, height: 800),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        
+        window.title = "MAC4MAC Log Reader"
+        window.contentViewController = hostingController
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        
+        // Set up window delegate to clean up reference when closed
+        logReaderWindowDelegate = LogReaderWindowDelegate { [weak self] in
+            self?.logReaderWindow = nil
+            self?.logReaderWindowDelegate = nil
+        }
+        window.delegate = logReaderWindowDelegate
+        
+        logReaderWindow = window
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         LogWriter.logEssential("Mac4Mac shutting down")
@@ -493,5 +547,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         bonjourService.stopAdvertising()
         webSocketServer.stopServer()
         trackChangeMonitor.stopMonitoring()
+    }
+}
+
+// MARK: - LogReaderWindowDelegate
+
+class LogReaderWindowDelegate: NSObject, NSWindowDelegate {
+    private let onWindowClosed: () -> Void
+    
+    init(onWindowClosed: @escaping () -> Void) {
+        self.onWindowClosed = onWindowClosed
+        super.init()
+    }
+    
+    func windowWillClose(_ notification: Notification) {
+        onWindowClosed()
     }
 }

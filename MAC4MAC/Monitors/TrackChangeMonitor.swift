@@ -90,19 +90,23 @@ class TrackChangeMonitor {
         }
         
         LogWriter.logEssential("Track change detected: \(currentTrackID)")
-        LogWriter.logEssential("🚀 STARTING PRIORITY SEQUENCE:")
-        self.lastTrackID = currentTrackID
         
+        // Log immediate track separator for clear visual separation
+        LogWriter.logTrackChangeDetected(trackID: currentTrackID)
+        
+        LogWriter.logOperationStart("3-Phase Track Processing")
+        self.lastTrackID = currentTrackID
+
         // STEP 2: PRIORITY 1 - Immediate sample rate sync (CRITICAL PATH)
-        LogWriter.logEssential("🚨 PRIORITY 1: Sample rate sync (CRITICAL)")
+        LogWriter.logOperationStart("Sample Rate Sync", phase: "P1")
         self.handleSampleRateSync(for: currentTrackID)
         
         // STEP 3: PRIORITY 2 - Fetch track info (async, for remote app)
-        LogWriter.logNormal("📊 PRIORITY 2: Track info (PARALLEL)")
+        LogWriter.logOperationStart("Track Info Fetch", phase: "P2")
         self.handleTrackInfoFetch(for: currentTrackID)
         
         // STEP 4: PRIORITY 3 - Fetch artwork (async, heavy operation)
-        LogWriter.logNormal("🖼️ PRIORITY 3: Artwork (PARALLEL)")
+        LogWriter.logOperationStart("Artwork Fetch", phase: "P3")
         self.handleArtworkFetch(for: currentTrackID)
     }
     
@@ -139,11 +143,11 @@ class TrackChangeMonitor {
     
     // PRIORITY 2: Track info for remote app (async)
     private func handleTrackInfoFetch(for trackID: String) {
-        LogWriter.logNormal("📊 PARALLEL: Starting track info fetch")
+        LogWriter.logWithSession("Starting track info fetch", level: .normal, phase: "P2")
         
         // Check cache first
         if let cachedInfo = trackInfoCache[trackID], !cachedInfo.isExpired {
-            LogWriter.logDebug("Using cached track info for \(trackID)")
+            LogWriter.logWithSession("Using cached track info", level: .debug, phase: "P2", status: "CACHE")
             updateWithCachedInfo(trackID: trackID, cachedInfo: cachedInfo)
             return
         }
@@ -155,11 +159,11 @@ class TrackChangeMonitor {
     
     // PRIORITY 3: Artwork fetch (async, lowest priority)
     private func handleArtworkFetch(for trackID: String) {
-        LogWriter.logNormal("🖼️ PARALLEL: Starting artwork fetch")
+        LogWriter.logWithSession("Starting artwork fetch", level: .normal, phase: "P3")
         
         // Check artwork cache first
         if let cachedArtwork = artworkCache[trackID] {
-            LogWriter.logDebug("Using cached artwork for \(trackID)")
+            LogWriter.logWithSession("Using cached artwork (\(cachedArtwork.count) bytes)", level: .debug, phase: "P3", status: "CACHE")
             // Mark artwork as ready for this track
             if trackStates[trackID] == nil {
                 trackStates[trackID] = TrackState()

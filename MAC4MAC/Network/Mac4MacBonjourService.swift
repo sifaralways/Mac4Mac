@@ -29,7 +29,7 @@ class Mac4MacBonjourService {
             bonjourListener = try NWListener(service: service, using: parameters)
             
             // CRASH FIX: Add weak self references
-            bonjourListener?.serviceRegistrationUpdateHandler = { [weak self] update in
+            bonjourListener?.serviceRegistrationUpdateHandler = { update in
                 switch update {
                 case .add(let endpoint):
                     LogWriter.logNormal("Bonjour service registered: \(endpoint)")
@@ -40,7 +40,7 @@ class Mac4MacBonjourService {
                 }
             }
             
-            bonjourListener?.stateUpdateHandler = { [weak self] state in
+            bonjourListener?.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
                     LogWriter.logNormal("Bonjour service ready for discovery")
