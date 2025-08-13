@@ -9,3 +9,6 @@ DerivedData/
 *.xcuserstate
 .DS_Store
 
+# Local triage details
+LocalTriageDetails/
+

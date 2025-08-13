@@ -32,9 +32,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let webSocketServer = Mac4MacWebSocketServer()
     let bonjourService = Mac4MacBonjourService()
     
-    // LogReader window
-    var logReaderWindow: NSWindow?
-    var logReaderWindowDelegate: LogReaderWindowDelegate?
+    // Console window (formerly LogReader window)
+    var consoleWindow: NSWindow?
+    var consoleWindowDelegate: ConsoleWindowDelegate?
     
     // Track the last processed track to detect artwork updates
     private var lastProcessedTrackID: String?
@@ -424,9 +424,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         // Log Reader menu item
-        let logReaderItem = NSMenuItem(title: "🔍 Open Log Reader", action: #selector(openLogReader), keyEquivalent: "l")
-        logReaderItem.target = self
-        menu.addItem(logReaderItem)
+        let consoleItem = NSMenuItem(title: "�️ Open Full Console", action: #selector(openFullConsole), keyEquivalent: "l")
+        consoleItem.target = self
+        menu.addItem(consoleItem)
         menu.addItem(NSMenuItem.separator())
 
         let toggleMenu = NSMenu()
@@ -508,16 +508,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
     
-    @objc func openLogReader() {
-        // If window already exists, bring it to front
-        if let existingWindow = logReaderWindow {
-            existingWindow.makeKeyAndOrderFront(nil)
-            return
+    @objc func openFullConsole() {
+        // Enhanced window state checking to prevent accessing deallocated windows
+        if let existingWindow = consoleWindow {
+            // Ensure window is actually valid and not in process of closing
+            if existingWindow.isVisible && existingWindow.contentViewController != nil {
+                existingWindow.makeKeyAndOrderFront(nil)
+                return
+            } else {
+                // Clean up invalid window reference immediately
+                existingWindow.contentViewController = nil
+                existingWindow.delegate = nil
+                consoleWindow = nil
+                consoleWindowDelegate = nil
+            }
         }
         
-        // Create new LogReader window
-        let logReaderView = LogReaderView()
-        let hostingController = NSHostingController(rootView: logReaderView)
+        // Create new Console window with full ContentView (includes tabs)
+        let contentView = ContentView()
+        let hostingController = NSHostingController(rootView: contentView)
         
         let window = NSWindow(
             contentRect: NSRect(x: 100, y: 100, width: 1200, height: 800),
@@ -526,19 +535,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         
-        window.title = "MAC4MAC Log Reader"
+        window.title = "MAC4MAC Full Console"
         window.contentViewController = hostingController
         window.center()
-        window.makeKeyAndOrderFront(nil)
         
-        // Set up window delegate to clean up reference when closed
-        logReaderWindowDelegate = LogReaderWindowDelegate { [weak self] in
-            self?.logReaderWindow = nil
-            self?.logReaderWindowDelegate = nil
+        // Critical: Disable window animations to prevent Core Animation corruption
+        window.animationBehavior = .none
+        window.isReleasedWhenClosed = false
+        
+        // Set up window delegate with enhanced cleanup
+        consoleWindowDelegate = ConsoleWindowDelegate { [weak self] in
+            // Use async dispatch to avoid timing conflicts
+            DispatchQueue.main.async {
+                // Enhanced cleanup to prevent memory corruption
+                if let windowToClean = self?.consoleWindow {
+                    windowToClean.contentViewController = nil
+                    windowToClean.delegate = nil
+                }
+                self?.consoleWindow = nil
+                self?.consoleWindowDelegate = nil
+            }
         }
-        window.delegate = logReaderWindowDelegate
+        window.delegate = consoleWindowDelegate
         
-        logReaderWindow = window
+        consoleWindow = window
+        window.makeKeyAndOrderFront(nil)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -550,9 +571,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// MARK: - LogReaderWindowDelegate
+// MARK: - ConsoleWindowDelegate
 
-class LogReaderWindowDelegate: NSObject, NSWindowDelegate {
+class ConsoleWindowDelegate: NSObject, NSWindowDelegate {
     private let onWindowClosed: () -> Void
     
     init(onWindowClosed: @escaping () -> Void) {
@@ -560,7 +581,10 @@ class LogReaderWindowDelegate: NSObject, NSWindowDelegate {
         super.init()
     }
     
-    func windowWillClose(_ notification: Notification) {
-        onWindowClosed()
+    func windowDidClose(_ notification: Notification) {
+        // Use async to avoid Core Animation transaction conflicts
+        DispatchQueue.main.async { [weak self] in
+            self?.onWindowClosed()
+        }
     }
 }
