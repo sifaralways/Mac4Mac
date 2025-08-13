@@ -18,7 +18,8 @@ MAC4MAC is a complete audio control ecosystem: a lightweight menu bar app that a
 
 | App Menu | Feature Toggles | Logging|
 |:--------------:|:-------:|:-------------:|
-| ![image](https://github.com/user-attachments/assets/7b159bcc-0524-4339-86a9-a8469c6d3d10) | ![image](https://github.com/user-attachments/assets/2503a310-e6fd-46c1-9727-65d3bcb4d653) | ![image](https://github.com/user-attachments/assets/52bb1403-83d7-478f-9238-8ea866b864ee) | 
+| ![image](https://github.com/user-attachments/assets/7b159bcc-0524-4339-86a9-a8469c6d3d10) | ![image](https://github.com/user-attachments/assets/2503a310-e6fd-46c1-9727-65d3bcb4d653) |![image](https://github.com/user-attachments/assets/43d4cfb6-5774-47a8-99a4-de8bb7c4e0b4)
+ | 
 
 
 
