@@ -191,6 +191,25 @@ struct LogWriter {
         logEssential(message)
     }
     
+    // MARK: - MusicKit Logging
+    
+    static func logMusicKit(_ message: String, level: LogLevel = .debug) {
+        let prefixedMessage = "🎵 MUSICKIT: \(message)"
+        log(prefixedMessage, level: level)
+    }
+    
+    static func logMusicKitAuth(_ status: String) {
+        logMusicKit("Authorization status: \(status)", level: .essential)
+    }
+    
+    static func logMusicKitTrack(_ trackInfo: String) {
+        logMusicKit("Track: \(trackInfo)", level: .essential)
+    }
+    
+    static func logMusicKitError(_ error: String) {
+        logMusicKit("❌ ERROR: \(error)", level: .essential)
+    }
+    
     /// Logs raw message without timestamp formatting (for separators)
     private static func logRaw(_ message: String) {
         let logFile = currentLogFile

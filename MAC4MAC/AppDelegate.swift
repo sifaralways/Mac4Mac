@@ -2,6 +2,7 @@ import AppKit
 import ScriptingBridge
 import Network
 import SwiftUI
+import MusicKit
 
 // MARK: - Music ScriptingBridge Protocols
 
@@ -32,6 +33,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let webSocketServer = Mac4MacWebSocketServer()
     let bonjourService = Mac4MacBonjourService()
     
+    // MusicKit current track info
+    var currentMusicKitTrack: String = "Apple Music: Not playing"
+    
+    // AppleScript current track info (from existing TrackChangeMonitor)
+    var currentAppleScriptTrack: String = "Music app: No track"
+    
+    // Track the last MusicKit track to detect changes
+    var lastMusicKitTrack: String = ""
+    
     // Console window (formerly LogReader window)
     var consoleWindow: NSWindow?
     var consoleWindowDelegate: ConsoleWindowDelegate?
@@ -49,7 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         LogWriter.logEssential("Mac4Mac launched successfully")
 
         // Set log level based on feature toggle
-        LogWriter.currentLogLevel = FeatureToggleManager.isEnabled(.logging) ? .debug : .essential
+        LogWriter.currentLogLevel = FeatureToggleManager.isEnabled(.logging) ? .debug : .debug // Force debug for MusicKit testing
 
         // Set initial defaults for toggles only once
         let defaults: [FeatureToggle: Bool] = [
@@ -71,6 +81,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         setupMenuBar()
         setupTrackMonitor()
+        setupMusicKit() // NEW: Initialize MusicKit
     }
     
     private func startServers() {
@@ -192,6 +203,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         trackChangeMonitor.onTrackChange = { [weak self] trackInfo in
             guard let self = self else { return }
+
+            // Update AppleScript track info for comparison
+            let appleScriptTrackString = "\(trackInfo.name) - \(trackInfo.artist)"
+            self.currentAppleScriptTrack = "Music app: \(appleScriptTrackString)"
 
             // Check if this is a minimal callback (for sample rate sync) or full callback
             let isMinimalCallback = trackInfo.artist == "Loading..." && trackInfo.album == "Loading..."
@@ -400,6 +415,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func updateMenu() {
         let menu = NSMenu()
 
+        // Show both AppleScript and MusicKit track info for comparison
+        menu.addItem(withTitle: currentAppleScriptTrack, action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: currentMusicKitTrack, action: nil, keyEquivalent: "")
+        menu.addItem(NSMenuItem.separator())
+
         let deviceName = AudioManager.getOutputDeviceName() ?? "Unknown"
         menu.addItem(withTitle: "🎧 Device: \(deviceName)", action: nil, keyEquivalent: "")
         menu.addItem(withTitle: String(format: "📈 Sample Rate: %.1f kHz", currentSampleRate / 1000.0), action: nil, keyEquivalent: "")
@@ -568,6 +588,155 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         bonjourService.stopAdvertising()
         webSocketServer.stopServer()
         trackChangeMonitor.stopMonitoring()
+    }
+    
+    // MARK: - MusicKit Setup
+    
+    private func setupMusicKit() {
+        Task {
+            await startMusicKitMonitoring()
+        }
+    }
+    
+    private func startMusicKitMonitoring() async {
+        LogWriter.logMusicKit("🚀 Starting MusicKit monitoring...")
+        
+        // Request MusicKit authorization
+        LogWriter.logMusicKit("Requesting authorization...")
+        let authStatus = await MusicAuthorization.request()
+        LogWriter.logMusicKitAuth("\(authStatus)")
+        
+        if authStatus == .authorized {
+            LogWriter.logMusicKit("✅ Authorization successful, starting track monitoring...")
+            await checkCurrentTrack()
+            
+            // Set up periodic checking every 2 seconds
+            LogWriter.logMusicKit("Setting up 2-second polling timer...")
+            Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                Task {
+                    await self?.checkCurrentTrack()
+                }
+            }
+        } else {
+            LogWriter.logMusicKitError("Authorization failed: \(authStatus)")
+            currentMusicKitTrack = "MusicKit not authorized"
+            await MainActor.run {
+                self.updateMenu()
+            }
+        }
+    }
+    
+    private func checkCurrentTrack() async {
+        LogWriter.logMusicKit("🔍 Checking current track with comprehensive MusicKit APIs...")
+        
+        // Method 1: Check ApplicationMusicPlayer (for programmatic playback)
+        let appPlayer = ApplicationMusicPlayer.shared
+        LogWriter.logMusicKit("App Player state: \(appPlayer.state.playbackStatus)")
+        LogWriter.logMusicKit("App Player queue entries: \(appPlayer.queue.entries.count)")
+        
+        // Method 2: Try to access currently playing content
+        do {
+            LogWriter.logMusicKit("Attempting to fetch current music activity...")
+            
+            let currentTrackInfo = await getCurrentlyPlayingTrack()
+            
+            if let trackInfo = currentTrackInfo {
+                LogWriter.logMusicKitTrack(trackInfo)
+                
+                // Check if this is a new track (different from last time)
+                if currentMusicKitTrack != trackInfo || lastMusicKitTrack != trackInfo {
+                    LogWriter.logMusicKit("🆕 Track change detected: '\(lastMusicKitTrack)' → '\(trackInfo)'")
+                    lastMusicKitTrack = currentMusicKitTrack
+                    currentMusicKitTrack = trackInfo
+                    await MainActor.run {
+                        LogWriter.logMusicKit("Updating menu with: \(trackInfo)")
+                        self.updateMenu()
+                    }
+                } else {
+                    LogWriter.logMusicKit("Track unchanged, no menu update needed")
+                }
+            } else {
+                LogWriter.logMusicKit("❌ No track information available from any MusicKit API")
+                if currentMusicKitTrack != "Apple Music: Not accessible" {
+                    currentMusicKitTrack = "Apple Music: Not accessible"
+                    await MainActor.run {
+                        self.updateMenu()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func getCurrentlyPlayingTrack() async -> String? {
+        LogWriter.logMusicKit("🎵 Trying multiple MusicKit approaches...")
+        
+        // Approach 1: ApplicationMusicPlayer current entry (for active streaming)
+        let appPlayer = ApplicationMusicPlayer.shared
+        if let currentEntry = appPlayer.queue.currentEntry {
+            LogWriter.logMusicKit("✅ Found current entry in ApplicationMusicPlayer")
+            if let _ = currentEntry.item {
+                LogWriter.logMusicKit("✅ Item accessible in ApplicationMusicPlayer")
+                // The item itself should have the properties we need but the concrete type
+                // may not be directly castable here; return a safe placeholder string.
+                return "Now Playing: Apple Music Track"
+            }
+        }
+        
+        // Approach 2: Check playback state and time for activity
+        let appPlayerTime = appPlayer.playbackTime
+        let playbackStatus = appPlayer.state.playbackStatus
+        LogWriter.logMusicKit("App Player time: \(appPlayerTime), status: \(playbackStatus)")
+        
+        if playbackStatus == .playing && appPlayerTime > 0 {
+            LogWriter.logMusicKit("✅ Player is actively playing")
+            return "Apple Music: Playing (time: \(String(format: "%.1f", appPlayerTime))s)"
+        }
+        
+        // Approach 3: Try to get most recent from listening history
+        do {
+            LogWriter.logMusicKit("Attempting to query recent listening history...")
+            let request = MusicRecentlyPlayedRequest<Song>()
+            let response = try await request.response()
+            
+            if let recentItem = response.items.first {
+                LogWriter.logMusicKit("✅ Found recent item in listening history")
+
+                // Build a clear trackInfo string
+                let title = recentItem.title
+                let artist = recentItem.artistName
+                let trackInfo = "Recent: \(title) - \(artist)"
+
+                // Log a few recent items for diagnostics
+                if response.items.count > 1 {
+                    LogWriter.logMusicKit("Found \(response.items.count) recent items, checking for changes...")
+                    for (index, item) in response.items.prefix(3).enumerated() {
+                        LogWriter.logMusicKit("  \(index + 1). \(item.title) - \(item.artistName)")
+                    }
+                }
+
+                return trackInfo
+            }
+        } catch {
+            LogWriter.logMusicKit("❌ Recent history query failed: \(error)")
+        }
+        
+        // Approach 4: Try catalog search to verify API connectivity
+        do {
+            LogWriter.logMusicKit("Attempting to search for music to verify API...")
+            var searchRequest = MusicCatalogSearchRequest(term: "test", types: [Song.self])
+            searchRequest.limit = 1
+            let searchResponse = try await searchRequest.response()
+            
+            if !searchResponse.songs.isEmpty {
+                LogWriter.logMusicKit("✅ Search API working (found \(searchResponse.songs.count) results)")
+                return "Apple Music: API Connected (no current track)"
+            }
+        } catch {
+            LogWriter.logMusicKit("❌ Search query failed: \(error)")
+        }
+        
+        LogWriter.logMusicKit("❌ No active playback detected in any MusicKit API")
+        return nil
     }
 }
 

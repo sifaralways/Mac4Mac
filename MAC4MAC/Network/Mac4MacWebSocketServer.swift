@@ -1,8 +1,33 @@
 import Foundation
+// Fix: Import LogWriter from Core
+// Ensure LogWriter is in the same target. If not, use the correct import or move LogWriter to a shared location.
+// If LogWriter is in the same target, just use:
+// import LogWriter (if it's a module)
+// Otherwise, no import is needed if it's in the same target.
 import Network
 import CommonCrypto
+import MusicKit
+
+// Use the project's `LogWriter` (it's a source file in the same target). Do not import a module here.
 
 class Mac4MacWebSocketServer {
+    // Helper to get AppleScript result as String
+    private func executeAppleScriptWithResult(_ script: String) -> String? {
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", script]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            LogWriter.logEssential("Failed to execute AppleScript with result: \(error)")
+            return nil
+        }
+    }
     private var listener: NWListener?
     
     // CRASH FIX: Thread-safe connections
@@ -19,6 +44,7 @@ class Mac4MacWebSocketServer {
         case audioConfigUpdate = "audio_config_update"
         case playStateUpdate = "play_state_update"
         case remoteCommand = "remote_command"
+    case ack = "ack"
         case heartbeat = "heartbeat"
         case serverInfo = "server_info"
         case progressUpdate = "progress_update"
@@ -58,7 +84,7 @@ class Mac4MacWebSocketServer {
                 }
             }
             
-            LogWriter.logNormal("Progress tracking started with \(updateInterval)s interval")
+                LogWriter.logNormal("Progress tracking started with \(updateInterval)s interval")
         }
         
         func stopTracking() {
@@ -128,6 +154,139 @@ class Mac4MacWebSocketServer {
             }
         }
     }
+
+    // MARK: - Metadata matching helpers
+    private func normalizeString(_ s: String) -> String {
+        var out = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Remove parenthesis content: (From "..."), (Live), etc.
+        out = out.replacingOccurrences(of: "\\(.*?\\)", with: "", options: .regularExpression)
+        // Replace common conjunction symbols
+        out = out.replacingOccurrences(of: "&", with: "and")
+        // Remove punctuation
+        out = out.components(separatedBy: CharacterSet.punctuationCharacters).joined(separator: " ")
+        // Remove duplicate whitespace
+        out = out.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        // Diacritic insensitive
+        out = out.folding(options: .diacriticInsensitive, locale: .current)
+        return out.lowercased()
+    }
+
+    private func levenshtein(_ a: String, _ b: String) -> Int {
+        let aChars = Array(a)
+        let bChars = Array(b)
+        let n = aChars.count
+        let m = bChars.count
+        if n == 0 { return m }
+        if m == 0 { return n }
+        var v0 = Array(0...m)
+        var v1 = Array(repeating: 0, count: m + 1)
+        for i in 0..<n {
+            v1[0] = i + 1
+            for j in 0..<m {
+                let cost = aChars[i] == bChars[j] ? 0 : 1
+                v1[j+1] = min(v1[j] + 1, v0[j+1] + 1, v0[j] + cost)
+            }
+            v0 = v1
+        }
+        return v0[m]
+    }
+
+    private func similarityScore(_ s1: String, _ s2: String) -> Double {
+        let a = normalizeString(s1)
+        let b = normalizeString(s2)
+        if a.isEmpty && b.isEmpty { return 1.0 }
+        let d = levenshtein(a, b)
+        let maxLen = max(a.count, b.count)
+        if maxLen == 0 { return 1.0 }
+        return 1.0 - (Double(d) / Double(maxLen))
+    }
+
+    private func metadataSearchAndPlay(title: String, artist: String, album: String?, wsConnection: WebSocketConnection) async throws -> (played: Bool, resolvedID: String?, confidence: Double) {
+        // Build search term candidates (prefer more specific terms first)
+        var terms: [String] = []
+        let base = "\(title) \(artist)"
+        terms.append(base)
+        if let album = album, !album.isEmpty {
+            terms.append("\(title) \(artist) \(album)")
+            terms.append("\(title) \(album)")
+        }
+        terms.append(title)
+        terms.append(artist)
+
+        var best: (song: Song, confidence: Double)? = nil
+        let maxPerTerm = 25
+
+        for term in terms {
+                LogWriter.logDebug("metadataSearchAndPlay: searching term='\(term)'")
+            var searchReq = MusicCatalogSearchRequest(term: term, types: [Song.self])
+            searchReq.limit = maxPerTerm
+            let resp = try await searchReq.response()
+            LogWriter.logDebug("metadataSearchAndPlay: term='\(term)' -> returned candidates=\(resp.songs.count)")
+
+            var bestForThisTerm: (song: Song, confidence: Double)? = nil
+            var idx = 0
+            for candidate in resp.songs {
+                idx += 1
+                // Compute matching heuristics
+                let titleScore = similarityScore(title, candidate.title)
+                let artistScore = similarityScore(artist, candidate.artistName)
+                var albumScore: Double = 0.0
+                if let album = album {
+                    albumScore = similarityScore(album, candidate.albumTitle ?? "")
+                }
+                // Combine weights: title(0.5), artist(0.35), album(0.15)
+                var score = titleScore * 0.5 + artistScore * 0.35 + albumScore * 0.15
+                // Slight boost for exact matches
+                if normalizeString(candidate.title) == normalizeString(title) { score += 0.05 }
+                if normalizeString(candidate.artistName) == normalizeString(artist) { score += 0.03 }
+
+                // Log promising candidates (or the first few)
+                if score >= 0.25 || idx <= 3 {
+                    let msg = String(format: "candidate[%d] id=%@ title='%@' artist='%@' album='%@' scores: title=%.3f artist=%.3f album=%.3f combined=%.3f", idx, candidate.id.rawValue, candidate.title, candidate.artistName, candidate.albumTitle ?? "", titleScore, artistScore, albumScore, score)
+                    LogWriter.logDebug(msg)
+                }
+
+                if bestForThisTerm == nil || score > bestForThisTerm!.confidence {
+                    bestForThisTerm = (candidate, score)
+                }
+            }
+
+            if let foundTermBest = bestForThisTerm {
+                let msg = String(format: "best for term='%@' -> id=%@ title='%@' artist='%@' combined=%.3f", term, foundTermBest.song.id.rawValue, foundTermBest.song.title, foundTermBest.song.artistName, foundTermBest.confidence)
+                LogWriter.logDebug(msg)
+                if best == nil || foundTermBest.confidence > best!.confidence {
+                    best = foundTermBest
+                }
+            } else {
+                LogWriter.logDebug("metadataSearchAndPlay: no candidates for term='\(term)'")
+            }
+
+            // If we found a very confident match, stop early
+            if let found = best, found.confidence > 0.6 {
+                break
+            }
+        }
+
+            if let found = best {
+            // Accept slightly lower score if album strongly matches
+            let acceptThreshold = 0.45
+            LogWriter.logDebug(String(format: "metadataSearchAndPlay: best overall -> id=%@ title='%@' artist='%@' confidence=%.3f", found.song.id.rawValue, found.song.title, found.song.artistName, found.confidence))
+            if found.confidence >= acceptThreshold {
+                do {
+                    try await MusicPlayerAdapter.shared.insertAndPlaySong(found.song)
+                    return (true, found.song.id.rawValue, found.confidence)
+                } catch {
+                    LogWriter.logDebug("metadataSearchAndPlay: adapter play failed: \(error)")
+                    return (false, nil, 0.0)
+                }
+                } else {
+                LogWriter.logDebug(String(format: "metadataSearchAndPlay: best candidate confidence %.3f below acceptThreshold %.3f", found.confidence, 0.45))
+            }
+        } else {
+            LogWriter.logDebug("metadataSearchAndPlay: no match found across all terms")
+        }
+        return (false, nil, 0.0)
+    }
     
     // CRASH FIX: Thread-safe connections access
     private var connections: [WebSocketConnection] {
@@ -148,7 +307,7 @@ class Mac4MacWebSocketServer {
         DispatchQueue.global().async {
             wsConnection.connection.cancel()
         }
-        LogWriter.logDebug("Removed WebSocket connection. Total: \(connections.count)")
+    LogWriter.logDebug("Removed WebSocket connection. Total: \(connections.count)")
     }
     
     func startServer() {
@@ -174,7 +333,7 @@ class Mac4MacWebSocketServer {
         addConnection(wsConnection)
         connection.start(queue: .global())
         
-        LogWriter.logDebug("New WebSocket connection. Total: \(connections.count)")
+    LogWriter.logDebug("New WebSocket connection. Total: \(connections.count)")
         
         // Start receiving data for WebSocket handshake
         receiveData(from: wsConnection)
@@ -406,7 +565,7 @@ class Mac4MacWebSocketServer {
         switch messageType {
         case .remoteCommand:
             if let data = json["data"] as? [String: Any] {
-                handleRemoteCommand(data)
+                handleRemoteCommand(data, from: wsConnection)
             }
         case .seekCommand:
             if let data = json["data"] as? [String: Any] {
@@ -429,12 +588,32 @@ class Mac4MacWebSocketServer {
             break
         }
     }
-    
-    private func handleRemoteCommand(_ data: [String: Any]) {
+
+    // Helper to send ack back to a specific WebSocket connection
+    private func sendAck(to wsConnection: WebSocketConnection, command: String, status: String, reason: String? = nil, resolvedID: String? = nil, confidence: Double? = nil) {
+        var ackData: [String: Any] = [
+            "command": command,
+            "status": status
+        ]
+        if let r = reason { ackData["reason"] = r }
+        if let id = resolvedID { ackData["resolvedID"] = id }
+        if let c = confidence { ackData["matchConfidence"] = c }
+
+        let ackMessage = WebSocketMessage(type: .ack, data: ackData)
+        // Log exact ACK payload for diagnostics
+        if let jsonData = ackMessage.toJSON(), let jsonString = String(data: jsonData, encoding: .utf8) {
+            LogWriter.logDebug("Sending ACK to connection \(wsConnection.id.uuidString): \(jsonString)")
+        } else {
+            LogWriter.logDebug("Sending ACK (could not serialize JSON) for command: \(command) status: \(status)")
+        }
+
+        sendWebSocketMessage(to: wsConnection, message: ackMessage)
+    }
+
+    private func handleRemoteCommand(_ data: [String: Any], from wsConnection: WebSocketConnection) {
         guard let command = data["command"] as? String else { return }
-        
-        LogWriter.logNormal("Remote command: \(command)")
-        
+    // Also log via LogWriter (ensures persistence in ~/Library/Caches/MAC4MAC_Logs)
+    LogWriter.logNormal("Remote command received: \(command) | data: \(data)")
         switch command {
         case "play_pause":
             let script = "tell application \"Music\" to playpause"
@@ -445,9 +624,342 @@ class Mac4MacWebSocketServer {
         case "previous_track":
             let script = "tell application \"Music\" to previous track"
             executeAppleScript(script)
-        case "stop":
-            let script = "tell application \"Music\" to stop"
-            executeAppleScript(script)
+        case "play_song":
+            // Prefer a true library `persistentID` if provided. If not, prefer `catalogID` (MusicKit ID) for Apple Music items.
+            LogWriter.logDebug("play_song handler invoked on connection \(wsConnection.id.uuidString) thread=\(Thread.isMainThread ? "main" : "bg")")
+            // Ensure the client sees we received the command
+            sendAck(to: wsConnection, command: "play_song", status: "attempting", reason: "RECEIVED")
+            if let pid = data["persistentID"] as? String, !pid.isEmpty {
+                // Treat this as a library persistent ID and attempt AppleScript lookup first
+                let musicKitID = pid
+                LogWriter.logNormal("play_song persistentID: \(musicKitID)")
+                LogWriter.logNormal("Received play_song with persistentID: \(musicKitID)")
+
+                // Send immediate ack: command received and attempt starting
+                sendAck(to: wsConnection, command: "play_song", status: "attempting")
+
+                // Try AppleScript for local library first
+                let script = """
+                tell application \"Music\"
+                    if it is running then
+                        try
+                            set theTrack to (first track of library playlist whose persistent ID is "\(musicKitID)")
+                            play theTrack
+                        on error
+                            return \"NOT_FOUND\"
+                        end try
+                    end if
+                end tell
+                """
+                let result = executeAppleScriptWithResult(script)
+                LogWriter.logNormal("AppleScript result for persistentID \(musicKitID): \(result ?? "nil")")
+                if result == "NOT_FOUND" || result == nil {
+                let result = executeAppleScriptWithResult(script)
+                    LogWriter.logNormal("AppleScript did not find local track by persistentID. Checking metadata-based local search first for ID: \(musicKitID)")
+                if result == "NOT_FOUND" || result == nil {
+                    // AppleScript did not find the track by persistent ID.
+                    LogWriter.logNormal("AppleScript did not find local track by persistentID. Checking metadata-based local search first for ID: \(musicKitID)")
+
+                    // If client provided an appleMusicURL (e.g., from Shazam), try opening it directly first
+                    if let appleMusicURL = data["appleMusicURL"] as? String, !appleMusicURL.isEmpty {
+                        LogWriter.logNormal("Received appleMusicURL from client: \(appleMusicURL). Attempting to open/play via Music.app")
+                        // Use AppleScript to open the URL in Music and play
+                        let openScript = "tell application \"Music\" to open location \"\(appleMusicURL)\""
+                        let openResult = executeAppleScriptWithResult(openScript)
+                        LogWriter.logNormal("AppleScript open location result: \(openResult ?? "nil")")
+                        // Try to play after opening
+                        let playScript = "tell application \"Music\" to play"
+                        _ = executeAppleScriptWithResult(playScript)
+                        // Give some time for Music to load the link; send ack that we attempted
+                        sendAck(to: wsConnection, command: "play_song", status: "attempting", reason: "OPENED_URL")
+                        // Return early; player state will be verified by progress tracker or subsequent updates
+                        return
+                    }
+
+                    // Try a metadata-based AppleScript search (title + artist) in the local library before contacting MusicKit catalog
+                    var handledByMeta = false
+                    if let title = data["title"] as? String, let artist = data["artist"] as? String {
+                        // Escape quotes in title/artist
+                        let escTitle = title.replacingOccurrences(of: "\"", with: "\\\"")
+                        let escArtist = artist.replacingOccurrences(of: "\"", with: "\\\"")
+                        let metaScript = """
+                        tell application \"Music\"
+                            if it is running then
+                                try
+                                    set foundTracks to (every track of library playlist whose name contains \"\(escTitle)\" and artist contains \"\(escArtist)\")
+                                    if (count of foundTracks) > 0 then
+                                        set theTrack to item 1 of foundTracks
+                                        play theTrack
+                                        return \"FOUND_LOCAL_BY_META\"
+                                    else
+                                        return \"NOT_FOUND_BY_META\"
+                                    end if
+                                on error
+                                    return \"NOT_FOUND_BY_META\"
+                                end try
+                            end if
+                        end tell
+                        """
+
+                        let metaResult = executeAppleScriptWithResult(metaScript)
+                        LogWriter.logNormal("AppleScript metadata search result for title='\(title)' artist='\(artist)': \(metaResult ?? "nil")")
+                        if metaResult == "FOUND_LOCAL_BY_META" {
+                            LogWriter.logNormal("Metadata-based local search succeeded for title='\(title)' artist='\(artist)'")
+                            // Final ack: success (local play via metadata)
+                            sendAck(to: wsConnection, command: "play_song", status: "ok", resolvedID: musicKitID, confidence: 1.0)
+                            handledByMeta = true
+                        }
+                    }
+
+                    if handledByMeta {
+                        // Already handled local playback via metadata search
+                        return
+                    }
+
+                    // Fallback: Use MusicKit to play by MusicKit ID (for Apple Music catalog songs)
+                    LogWriter.logNormal("Trying MusicKit fallback for persistentID-as-MusicKit-ID: \(musicKitID)")
+                    Task {
+                        do {
+                            let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: MusicItemID(musicKitID))
+                            let response = try await request.response()
+                            let song = response.items.first
+                                if let song = song {
+                                do {
+                                    try await MusicPlayerAdapter.shared.insertAndPlaySong(song)
+                                    LogWriter.logNormal("MusicKit fallback: Played song by MusicKit ID: \(musicKitID) via adapter")
+                                } catch {
+                                    LogWriter.logEssential("MusicKit fallback adapter play failed: \(error)")
+                                }
+                                // Final ack: success
+                                sendAck(to: wsConnection, command: "play_song", status: "ok", resolvedID: musicKitID, confidence: 1.0)
+                } else {
+                    LogWriter.logNormal("MusicKit fallback: No song found for ID: \(musicKitID)")
+                                    // Attempt metadata search fallback (title + artist) if metadata was provided
+                                    if let title = data["title"] as? String, let artist = data["artist"] as? String {
+                                        LogWriter.logNormal("Attempting metadata search for title='\(title)' artist='\(artist)'")
+                                        do {
+                                            let (played, resolvedID, confidence) = try await metadataSearchAndPlay(title: title, artist: artist, album: data["album"] as? String, wsConnection: wsConnection)
+                                            if played {
+                                                LogWriter.logNormal("Metadata search matched and played: resolvedID=\(resolvedID ?? "") confidence=\(confidence)")
+                                                sendAck(to: wsConnection, command: "play_song", status: "ok", resolvedID: resolvedID, confidence: confidence)
+                                            } else {
+                                                LogWriter.logNormal("Metadata search found no confident match for title='\(title)' artist='\(artist)'")
+                                                sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "NOT_FOUND")
+                                            }
+                                        } catch {
+                                            LogWriter.logEssential("Metadata search error for title='\(data["title"] ?? "")' artist='\(data["artist"] ?? "")': \(error)")
+                                            sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "SEARCH_ERROR")
+                                        }
+                                    } else {
+                                        // Final ack: failed (no metadata to search)
+                                        sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "NOT_FOUND")
+                                    }
+                            }
+                        } catch {
+                            LogWriter.logEssential("MusicKit fallback error for ID \(musicKitID): \(error)")
+                            // If the resource request failed with a 404, attempt metadata search if possible
+                            // Attempt metadata search on common MusicKit 404-like failures
+                            let nsErr = error as NSError
+                            if nsErr.code == 404 || nsErr.domain == "MusicDataRequest.Error" || nsErr.code == 40400 {
+                                if let title = data["title"] as? String, let artist = data["artist"] as? String {
+                                    LogWriter.logNormal("MusicKit ID request returned 404 — attempting metadata search as fallback")
+                                    do {
+                                        let (played, resolvedID, confidence) = try await metadataSearchAndPlay(title: title, artist: artist, album: data["album"] as? String, wsConnection: wsConnection)
+                                        if played {
+                                            LogWriter.logNormal("Metadata search matched and played after 404: resolvedID=\(resolvedID ?? "") confidence=\(confidence)")
+                                            sendAck(to: wsConnection, command: "play_song", status: "ok", resolvedID: resolvedID, confidence: confidence)
+                                        } else {
+                                            LogWriter.logNormal("Metadata search after 404 found no confident match")
+                                            sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "NOT_FOUND")
+                                        }
+                                    } catch {
+                                        LogWriter.logEssential("Metadata search after 404 error: \(error)")
+                                        sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "SEARCH_ERROR")
+                                    }
+                                } else {
+                                    sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "MUSICKIT_ERROR")
+                                }
+                            } else {
+                                sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "MUSICKIT_ERROR")
+                            }
+                        }
+                    }
+                } else {
+                    LogWriter.logNormal("AppleScript successfully triggered playback for persistentID: \(musicKitID)")
+                    // Final ack: success (local play)
+                    sendAck(to: wsConnection, command: "play_song", status: "ok", resolvedID: musicKitID, confidence: 1.0)
+                }
+                return
+            }
+
+            // If we get here, no library persistentID was provided (or it was empty). Prefer catalogID (MusicKit ID) if present.
+            if let catalogID = data["catalogID"] as? String, !catalogID.isEmpty {
+                LogWriter.logNormal("play_song catalogID: \(catalogID)")
+                LogWriter.logNormal("Received play_song with catalogID: \(catalogID)")
+
+                // Send immediate ack: command received and attempt starting
+                sendAck(to: wsConnection, command: "play_song", status: "attempting")
+
+                // If client provided an appleMusicURL, try to extract an explicit track id (i=) and prefer it for catalog lookups
+                if let appleMusicURL = data["appleMusicURL"] as? String, !appleMusicURL.isEmpty {
+                    LogWriter.logNormal("Received appleMusicURL from client: \(appleMusicURL)")
+                    if let url = URL(string: appleMusicURL), let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                        // Attempt to extract ?i=TRACK_ID
+                        let trackParam = components.queryItems?.first(where: { $0.name == "i" })?.value
+                        // Try last path component as a candidate (many Apple Music URLs include the track id as the last path component, e.g. /song/i.<id>)
+                        let lastPathComponent = url.path.split(separator: "/").last.map(String.init)
+
+                        // Prefer query param, otherwise look for a path-based id like "i.<id>" or a raw id in the path
+                        var trackIdCandidate: String? = trackParam
+                        if trackIdCandidate == nil, let last = lastPathComponent {
+                            if last.starts(with: "i.") {
+                                trackIdCandidate = last
+                            } else if last.count > 5 {
+                                // Some URLs may use the id directly as the last component
+                                trackIdCandidate = last
+                            }
+                        }
+
+                        if let trackId = trackIdCandidate, !trackId.isEmpty {
+                            LogWriter.logNormal("Extracted track id from URL/path: \(trackId). Will attempt MusicKit lookup using this id first.")
+                            // Prefer the extracted track id before other candidates
+                            Task {
+                                let idCandidates = [trackId, "i.\(trackId)", catalogID]
+                                var lastError: Error?
+                                var found = false
+                                for candidate in idCandidates {
+                                    do {
+                                        LogWriter.logNormal("MusicKit: attempting resource request for candidate id=\(candidate)")
+                                        let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: MusicItemID(candidate))
+                                        let response = try await request.response()
+                                        if let song = response.items.first {
+                                        do {
+                                            try await MusicPlayerAdapter.shared.insertAndPlaySong(song)
+                                            LogWriter.logNormal("MusicKit: Played song by candidate id: \(candidate) via adapter")
+                                            sendAck(to: wsConnection, command: "play_song", status: "ok", resolvedID: candidate, confidence: 1.0)
+                                            found = true
+                                            break
+                                        } catch {
+                                            LogWriter.logEssential("MusicKit adapter play failed for candidate id=\(candidate): \(error)")
+                                        }
+                                        } else {
+                                            LogWriter.logNormal("MusicKit: No song found for candidate id=\(candidate)")
+                                        }
+                                    } catch {
+                                        lastError = error
+                                        let nsErr = error as NSError
+                                        let desc = (nsErr.userInfo[NSLocalizedDescriptionKey] as? String) ?? String(describing: error)
+                                        LogWriter.logEssential("MusicKit resource request error for candidate id=\(candidate): domain=\(nsErr.domain) code=\(nsErr.code) desc=\(desc) userInfo=\(nsErr.userInfo)")
+                                        continue
+                                    }
+                                }
+
+                                if found { return }
+
+                                // If nothing found by id, fall back to metadata search (title+artist) if provided
+                                if let title = data["title"] as? String, let artist = data["artist"] as? String {
+                                    do {
+                                        let (played, resolvedID, confidence) = try await metadataSearchAndPlay(title: title, artist: artist, album: data["album"] as? String ?? lastPathComponent, wsConnection: wsConnection)
+                                        if played {
+                                            sendAck(to: wsConnection, command: "play_song", status: "ok", resolvedID: resolvedID, confidence: confidence)
+                                        } else {
+                                            sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "NOT_FOUND")
+                                        }
+                                    } catch {
+                                        if let e = lastError as NSError? {
+                                            let desc = (e.userInfo[NSLocalizedDescriptionKey] as? String) ?? String(describing: e)
+                                            LogWriter.logEssential("Final fallback metadata search error; last MusicKit error domain=\(e.domain) code=\(e.code) desc=\(desc)")
+                                        }
+                                        sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "SEARCH_ERROR")
+                                    }
+                                } else {
+                                    // No track id extracted but also no metadata to search with — fall through to try resource-by-id for the provided catalogID below
+                                    LogWriter.logNormal("No explicit track id extracted from URL and no metadata to assist search — will try catalogID resource request next.")
+                                }
+                            }
+                            return
+                        }
+                    }
+
+                    // If we couldn't extract a usable track id from the URL, do not open the URL immediately here.
+                    // Let the later resource-by-id attempt (using catalogID) run and only open the URL as a last resort
+                    LogWriter.logNormal("appleMusicURL present but no explicit track id extracted — will attempt catalogID resource request before opening URL")
+                }
+
+                // Otherwise, try MusicKit resource request by catalogID (try a few id-variants if necessary)
+                LogWriter.logNormal("Trying MusicKit resource request for catalogID: \(catalogID)")
+                // Send an extra debug ack so clients can see we began the catalog lookup
+                sendAck(to: wsConnection, command: "play_song", status: "attempting", reason: "CATALOG_LOOKUP_STARTED")
+                LogWriter.logDebug("Spawning Task for catalogID resource lookup for id=\(catalogID)")
+                Task {
+                    LogWriter.logDebug("catalogID resource lookup Task started for id=\(catalogID)")
+                    // Use centralized adapter for playback
+                                    // player not required here; adapter will be used inside metadataSearchAndPlay
+                    // Try common id variants to handle storefront/format differences
+                    let idCandidates = [catalogID, "i.\(catalogID)"]
+                    var lastError: Error?
+                    var found = false
+                    for candidate in idCandidates {
+                        do {
+                            LogWriter.logNormal("MusicKit: attempting resource request for candidate id=\(candidate)")
+                            let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: MusicItemID(candidate))
+                            let response = try await request.response()
+                            if let song = response.items.first {
+                                do {
+                                    try await MusicPlayerAdapter.shared.insertAndPlaySong(song)
+                                    LogWriter.logNormal("MusicKit: Played song by catalogID candidate: \(candidate) via adapter")
+                                    sendAck(to: wsConnection, command: "play_song", status: "ok", resolvedID: candidate, confidence: 1.0)
+                                    found = true
+                                    break
+                                } catch {
+                                    LogWriter.logEssential("MusicKit adapter play failed for candidate=\(candidate): \(error)")
+                                }
+                            } else {
+                                            LogWriter.logNormal("MusicKit: No song found for candidate id=\(candidate)")
+                            }
+                        } catch {
+                            lastError = error
+                            let nsErr = error as NSError
+                            let desc = (nsErr.userInfo[NSLocalizedDescriptionKey] as? String) ?? String(describing: error)
+                                        LogWriter.logEssential("MusicKit resource request error for candidate id=\(candidate): domain=\(nsErr.domain) code=\(nsErr.code) desc=\(desc) userInfo=\(nsErr.userInfo)")
+                            // Try next candidate if this one failed with a 404-like issue
+                            continue
+                        }
+                    }
+
+                    if found { return }
+
+                                LogWriter.logDebug("catalogID resource lookup completed; found=\(found)")
+
+                    // If no candidate succeeded, fall back to metadata search (if we have title/artist)
+                    if let title = data["title"] as? String, let artist = data["artist"] as? String {
+                        do {
+                            let (played, resolvedID, confidence) = try await metadataSearchAndPlay(title: title, artist: artist, album: data["album"] as? String, wsConnection: wsConnection)
+                            if played {
+                                sendAck(to: wsConnection, command: "play_song", status: "ok", resolvedID: resolvedID, confidence: confidence)
+                            } else {
+                                sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "NOT_FOUND")
+                            }
+                        } catch {
+                            // If we had a lastError from resource attempts, include that info in the logs
+                            if let e = lastError as NSError? {
+                                let desc = (e.userInfo[NSLocalizedDescriptionKey] as? String) ?? String(describing: e)
+                                LogWriter.logEssential("Final fallback metadata search error; last MusicKit error domain=\(e.domain) code=\(e.code) desc=\(desc)")
+                            }
+                            sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "SEARCH_ERROR")
+                        }
+                    } else {
+                        // No metadata available to search with
+                        if let e = lastError as NSError? {
+                            let desc = (e.userInfo[NSLocalizedDescriptionKey] as? String) ?? String(describing: e)
+                            LogWriter.logEssential("MusicKit resource-by-id attempts failed; last error domain=\(e.domain) code=\(e.code) desc=\(desc)")
+                        }
+                        sendAck(to: wsConnection, command: "play_song", status: "failed", reason: "MUSICKIT_ERROR")
+                    }
+                }
+                return
+            }
+            }
         case "start_progress_tracking":
             startProgressTracking()
         case "stop_progress_tracking":
@@ -455,6 +967,8 @@ class Mac4MacWebSocketServer {
         case "set_progress_interval":
             if let interval = data["interval"] as? Double {
                 setProgressInterval(interval)
+            } else {
+                setProgressInterval(1.0) // Default to 1.0 if missing
             }
         default:
             break
@@ -490,7 +1004,7 @@ class Mac4MacWebSocketServer {
             try task.run()
             task.waitUntilExit()
         } catch {
-            LogWriter.logEssential("Failed to execute AppleScript: \(error)")
+                LogWriter.logEssential("Failed to execute AppleScript: \(error)")
         }
     }
     
@@ -691,7 +1205,7 @@ class Mac4MacWebSocketServer {
         }
         listener?.cancel()
         listener = nil
-        Mac4MacWebSocketServer.shared = nil
-        LogWriter.logEssential("WebSocket server stopped")
+    Mac4MacWebSocketServer.shared = nil
+    LogWriter.logEssential("WebSocket server stopped")
     }
 }

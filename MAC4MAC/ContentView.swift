@@ -18,6 +18,13 @@ struct ContentView: View {
                     Text("Music Control")
                 }
                 .tag(0)
+
+            SystemPlayerTestView()
+                .tabItem {
+                    Image(systemName: "playpause")
+                    Text("System Player")
+                }
+                .tag(2)
             
             LogReaderView()
                 .tabItem {
