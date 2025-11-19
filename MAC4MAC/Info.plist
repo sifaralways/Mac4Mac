@@ -4,6 +4,8 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Used to analyze system audio from BlackHole</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Mac4Mac scans your Apple Music library to identify High Resolution Lossless and Dolby Atmos tracks, then creates organized playlists for easy access.</string>
 	<key>CFBundleIconFile</key>
 	<string>Mac4Mac</string><key>NSLocalNetworkUsageDescription</key>
     <string>Mac4Mac creates a local server to share music information with your iOS devices</string>
