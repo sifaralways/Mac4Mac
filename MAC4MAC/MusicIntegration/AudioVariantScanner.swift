@@ -1,6 +1,5 @@
 import MusicKit
 import Foundation
-// Note: LogWriter is available as part of the same module
 
 /// Audio Variant Scanner - Scans Music library for High Res and Atmos tracks
 class AudioVariantScanner {
@@ -63,20 +62,29 @@ class AudioVariantScanner {
             // Process AudioVariants in chunks
             let chunkSize = 50
             var songVariants: [(song: Song, variants: SongVariants)] = []
+            var songsWithVariants = 0
 
-            LogWriter.logNormal("🔍 Processing AudioVariants in chunks of \(chunkSize)...")
+            LogWriter.logEssential("🔍 Processing AudioVariants in chunks of \(chunkSize)...")
 
             for chunkStart in stride(from: 0, to: allSongs.count, by: chunkSize) {
                 let chunkEnd = min(chunkStart + chunkSize, allSongs.count)
                 let chunk = Array(allSongs[chunkStart..<chunkEnd])
 
-                LogWriter.logDebug("   📊 Processing songs \(chunkStart + 1)-\(chunkEnd) of \(allSongs.count)...")
+                LogWriter.logEssential("   📊 Processing songs \(chunkStart + 1)-\(chunkEnd) of \(allSongs.count)...")
 
                 for song in chunk {
                     let variants = await getSongAudioVariants(song)
                     songVariants.append((song: song, variants: variants))
+                    
+                    if variants.lossless || variants.highRes || variants.atmos || variants.spatial {
+                        songsWithVariants += 1
+                    }
                 }
+                
+                LogWriter.logEssential("   📊 Chunk complete: \(songsWithVariants) songs with variants found so far")
             }
+
+            LogWriter.logEssential("✅ Variant processing complete: \(songsWithVariants)/\(allSongs.count) songs have audio variants")
 
             // Create playlists
             LogWriter.logEssential("🎵 Creating playlists based on AudioVariants...")
@@ -84,24 +92,24 @@ class AudioVariantScanner {
             let highResSongs = songVariants.filter { $0.variants.highRes }.map { $0.song }
             let atmosSongs = songVariants.filter { $0.variants.atmos }.map { $0.song }
 
-            LogWriter.logNormal("   📊 Found \(highResSongs.count) High Res songs and \(atmosSongs.count) Atmos songs")
+            LogWriter.logEssential("📊 Found \(highResSongs.count) High Res songs and \(atmosSongs.count) Atmos songs")
 
             if !highResSongs.isEmpty {
-                LogWriter.logNormal("   📊 Creating playlist 'High Resolution Songs' with \(highResSongs.count) tracks...")
+                LogWriter.logEssential("📊 Creating playlist 'High Resolution Songs' with \(highResSongs.count) tracks...")
                 await createPlaylistAndAddTracks(name: "High Resolution Songs",
                                                description: "Songs available in High Resolution Lossless format (24-bit/192 kHz)",
                                                songs: highResSongs)
             } else {
-                LogWriter.logNormal("   ℹ️ No High Resolution songs found, skipping playlist creation")
+                LogWriter.logEssential("ℹ️ No High Resolution songs found, skipping playlist creation")
             }
 
             if !atmosSongs.isEmpty {
-                LogWriter.logNormal("   📊 Creating playlist 'Dolby Atmos Tracks' with \(atmosSongs.count) tracks...")
+                LogWriter.logEssential("📊 Creating playlist 'Dolby Atmos Tracks' with \(atmosSongs.count) tracks...")
                 await createPlaylistAndAddTracks(name: "Dolby Atmos Tracks",
                                                description: "Songs available in Dolby Atmos immersive audio format",
                                                songs: atmosSongs)
             } else {
-                LogWriter.logNormal("   ℹ️ No Dolby Atmos tracks found, skipping playlist creation")
+                LogWriter.logEssential("ℹ️ No Dolby Atmos tracks found, skipping playlist creation")
             }
 
             // Calculate summary
@@ -158,49 +166,62 @@ class AudioVariantScanner {
 
     private func createPlaylistAndAddTracks(name: String, description: String, songs: [Song]) async {
         // First, create the playlist if it doesn't exist
+        LogWriter.logEssential("🔧 Creating/verifying playlist '\(name)'...")
         let createScript = """
         tell application "Music"
             if not (exists playlist "\(name)") then
                 make new playlist with properties {name:"\(name)", description:"\(description)"}
+                return "PLAYLIST_CREATED"
+            else
+                return "PLAYLIST_EXISTS"
             end if
         end tell
         """
-        runAppleScript(createScript)
+        if let createResult = runAppleScriptWithResult(createScript) {
+            LogWriter.logEssential("📁 Playlist '\(name)' creation result: \(createResult)")
+        } else {
+            LogWriter.logEssential("❌ Failed to create/verify playlist '\(name)'")
+            return
+        }
 
         // Use batch processing with better error handling
         let batchSize = 20
         var totalProcessed = 0
         var totalAdded = 0
 
-        LogWriter.logNormal("   📤 Adding \(songs.count) tracks to playlist in batches of \(batchSize)...")
+        LogWriter.logEssential("📤 Adding \(songs.count) tracks to playlist '\(name)' in batches of \(batchSize)...")
 
         for batchStart in stride(from: 0, to: songs.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, songs.count)
             let batch = Array(songs[batchStart..<batchEnd])
 
-            LogWriter.logDebug("   📦 Processing batch \(batchStart/batchSize + 1) (\(batchStart + 1)-\(batchEnd) of \(songs.count))...")
+            LogWriter.logEssential("📦 Processing batch \(batchStart/batchSize + 1) (\(batchStart + 1)-\(batchEnd) of \(songs.count))...")
 
             var batchAdded = 0
 
             // Process each song individually
             for song in batch {
+                LogWriter.logEssential("🎵 Processing song: '\(song.title)' by '\(song.artistName)'")
                 let result = await addSongToPlaylist(song, playlistName: name)
                 if result {
                     batchAdded += 1
+                    LogWriter.logEssential("✅ Successfully processed '\(song.title)' by '\(song.artistName)'")
+                } else {
+                    LogWriter.logEssential("❌ Failed to process '\(song.title)' by '\(song.artistName)'")
                 }
             }
 
             totalProcessed += batch.count
             totalAdded += batchAdded
 
-            LogWriter.logDebug("   📊 Batch \(batchStart/batchSize + 1) complete: \(batchAdded) added")
+            LogWriter.logEssential("📊 Batch \(batchStart/batchSize + 1) complete: \(batchAdded)/\(batch.count) added")
         }
 
-        LogWriter.logNormal("   🎯 Playlist operation complete: \(totalAdded)/\(songs.count) tracks added (\(String(format: "%.1f", Double(totalAdded)/Double(songs.count)*100))% success rate)")
+        LogWriter.logEssential("🎯 Playlist '\(name)' operation complete: \(totalAdded)/\(songs.count) tracks added (\(String(format: "%.1f", Double(totalAdded)/Double(songs.count)*100))% success rate)")
     }
 
     private func addSongToPlaylist(_ song: Song, playlistName: String) async -> Bool {
-        // Mild sanitization
+        // Mild sanitization for fallback matching
         let title = song.title.replacingOccurrences(of: "\"", with: "")
             .replacingOccurrences(of: "'", with: "")
             .replacingOccurrences(of: "&", with: "and")
@@ -210,8 +231,50 @@ class AudioVariantScanner {
             .replacingOccurrences(of: "&", with: "and")
             .replacingOccurrences(of: "/", with: "")
             .replacingOccurrences(of: "\\", with: "")
-
-        // Try multiple matching strategies with duplicate-first, add-fallback approach
+        
+        // First, check if song already exists in playlist
+        let duplicateCheckScript = """
+        tell application "Music"
+            try
+                if not (exists playlist "\(playlistName)") then
+                    return "PLAYLIST_NOT_EXISTS"
+                end if
+                
+                set targetPlaylist to playlist "\(playlistName)"
+                set allTracks to tracks of targetPlaylist
+                
+                repeat with aTrack in allTracks
+                    if (name of aTrack is "\(title)") and (artist of aTrack is "\(artist)") then
+                        return "ALREADY_EXISTS"
+                    end if
+                end repeat
+                
+                return "NOT_EXISTS"
+            on error errMsg
+                return "DUPLICATE_CHECK_ERROR: " & errMsg
+            end try
+        end tell
+        """
+        
+        if let duplicateResult = runAppleScriptWithResult(duplicateCheckScript) {
+            LogWriter.logEssential("🔍 Duplicate check for '\(title)' by '\(artist)': \(duplicateResult)")
+            
+            if duplicateResult.contains("ALREADY_EXISTS") {
+                LogWriter.logEssential("✅ Song '\(title)' by '\(artist)' already exists in playlist - skipping")
+                return true // Count as success since it's already there
+            } else if duplicateResult.contains("PLAYLIST_NOT_EXISTS") {
+                LogWriter.logEssential("ℹ️ Playlist '\(playlistName)' doesn't exist yet - will create and add")
+                // Continue to add logic below
+            } else if !duplicateResult.contains("NOT_EXISTS") {
+                LogWriter.logEssential("⚠️ Unexpected duplicate check result: \(duplicateResult) - proceeding with add")
+                // Continue to add logic below
+            }
+        } else {
+            LogWriter.logEssential("❌ Duplicate check failed for '\(title)' by '\(artist)' - proceeding with add")
+            // Continue to add logic below
+        }
+        
+        // If we get here, either duplicate check failed or song doesn't exist - try to add it
         let addScript = """
         tell application "Music"
             if not (exists playlist "\(playlistName)") then
@@ -220,36 +283,45 @@ class AudioVariantScanner {
 
             set targetPlaylist to playlist "\(playlistName)"
 
-            -- FIRST: Check if song is already in playlist
-            try
-                set existingTracks to (tracks of targetPlaylist whose name contains "\(title)" and artist contains "\(artist)")
-                if (count of existingTracks) > 0 then
-                    return "ALREADY_EXISTS"
-                end if
-            end try
-
             set trackAdded to false
+            set searchTitle to "\(title)"
+            set searchArtist to "\(artist)"
+
+            -- Log what we're searching for
+            log "Searching for: " & searchTitle & " by " & searchArtist
 
             try
-                -- Strategy 1: Try exact match first
-                set foundTrack to (first track of library playlist 1 whose name is "\(title)" and artist is "\(artist)")
+                -- Try exact match for title and artist
+                set foundTrack to (first track of library playlist 1 whose name is searchTitle and artist is searchArtist)
                 set trackAdded to true
+                log "Found exact match"
             on error
                 try
-                    -- Strategy 2: Try contains match for both title and artist
-                    set foundTrack to (first track of library playlist 1 whose name contains "\(title)" and artist contains "\(artist)")
+                    -- Try contains match for both title and artist (more lenient)
+                    set foundTrack to (first track of library playlist 1 whose name contains searchTitle and artist contains searchArtist)
                     set trackAdded to true
+                    log "Found contains match for title+artist"
                 on error
                     try
-                        -- Strategy 3: Try contains match for title only (more lenient)
-                        set foundTrack to (first track of library playlist 1 whose name contains "\(title)")
+                        -- Try contains match for title only (most lenient)
+                        set foundTrack to (first track of library playlist 1 whose name contains searchTitle)
                         set trackAdded to true
+                        log "Found contains match for title only"
                     on error
-                        -- Strategy 4: Check if it's a local file track that can't be duplicated
-                        set localTracks to (tracks whose name contains "\(title)" and kind contains "MPEG" or kind contains "AAC" or kind contains "Apple Lossless")
-                        if (count of localTracks) > 0 then
-                            return "LOCAL_FILE"
-                        else
+                        -- Try to find any track with similar title (very lenient fallback)
+                        tell library playlist 1
+                            set allTracks to tracks
+                            repeat with aTrack in allTracks
+                                if name of aTrack contains searchTitle then
+                                    set foundTrack to aTrack
+                                    set trackAdded to true
+                                    log "Found track with manual search: " & (name of aTrack) & " by " & (artist of aTrack)
+                                    exit repeat
+                                end if
+                            end repeat
+                        end tell
+                        if not trackAdded then
+                            log "No tracks found with any search method"
                             return "NOT_FOUND"
                         end if
                     end try
@@ -257,16 +329,7 @@ class AudioVariantScanner {
             end try
 
             if trackAdded then
-                -- Check if it's a local file track BEFORE trying duplicate/add
-                try
-                    -- Check if the track has a location (local file) or is a streaming track
-                    set trackLocation to location of foundTrack
-                    -- If we get here, it's a local file track
-                    return "LOCAL_FILE_CANNOT_ADD"
-                on error
-                    -- No location property means it's likely a streaming track, proceed with duplicate/add
-                end try
-
+                -- Always try to add the track regardless of local/streaming status
                 try
                     -- First try: duplicate (works better for some tracks)
                     duplicate foundTrack to targetPlaylist
@@ -286,33 +349,32 @@ class AudioVariantScanner {
         """
 
         if let result = runAppleScriptWithResult(addScript) {
+            LogWriter.logEssential("📤 Add result for '\(title)' by '\(artist)': \(result)")
+            
             if result.contains("SUCCESS_DUPLICATE") {
-                LogWriter.logDebug("Song '\(title)' by '\(artist)' added to playlist (duplicate)")
+                LogWriter.logEssential("✅ Song '\(title)' by '\(artist)' added to playlist (duplicate)")
                 return true
             } else if result.contains("SUCCESS_ADD") {
-                LogWriter.logDebug("Song '\(title)' by '\(artist)' added to playlist (add)")
+                LogWriter.logEssential("✅ Song '\(title)' by '\(artist)' added to playlist (add)")
                 return true
-            } else if result.contains("ALREADY_EXISTS") {
-                LogWriter.logDebug("Song '\(title)' by '\(artist)' already exists in playlist")
-                return true // Count as success
-            } else if result.contains("LOCAL_FILE") || result.contains("LOCAL_FILE_CANNOT_ADD") {
-                LogWriter.logDebug("Song '\(title)' by '\(artist)' is a local file track - cannot add to playlist")
+            } else if result.contains("LOCAL_FILE") {
+                LogWriter.logEssential("⚠️ Song '\(title)' by '\(artist)' is a local file track - cannot add to playlist")
                 return false
             } else if result.contains("NOT_FOUND") {
-                LogWriter.logDebug("Song '\(title)' by '\(artist)' has no tracks available at all")
+                LogWriter.logEssential("❌ Song '\(title)' by '\(artist)' has no tracks available at all")
                 return false
             } else if result.contains("DUPLICATE_ERROR") || result.contains("ADD_ERROR") {
-                LogWriter.logDebug("ERROR: Song '\(title)' by '\(artist)' failed - \(result)")
+                LogWriter.logEssential("❌ ERROR: Song '\(title)' by '\(artist)' failed - \(result)")
                 return false
             } else {
-                LogWriter.logDebug("UNKNOWN: Song '\(title)' by '\(artist)' result: \(result)")
+                LogWriter.logEssential("❓ UNKNOWN: Song '\(title)' by '\(artist)' result: \(result)")
                 return false
             }
         }
 
         return false
     }
-
+    
     private func runAppleScript(_ source: String) {
         let task = Process()
         task.launchPath = "/usr/bin/osascript"
