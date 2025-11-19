@@ -308,22 +308,9 @@ class AudioVariantScanner {
                         set trackAdded to true
                         log "Found contains match for title only"
                     on error
-                        -- Try to find any track with similar title (very lenient fallback)
-                        tell library playlist 1
-                            set allTracks to tracks
-                            repeat with aTrack in allTracks
-                                if name of aTrack contains searchTitle then
-                                    set foundTrack to aTrack
-                                    set trackAdded to true
-                                    log "Found track with manual search: " & (name of aTrack) & " by " & (artist of aTrack)
-                                    exit repeat
-                                end if
-                            end repeat
-                        end tell
-                        if not trackAdded then
-                            log "No tracks found with any search method"
-                            return "NOT_FOUND"
-                        end if
+                        -- Track not found with any efficient matching strategy
+                        log "No tracks found with any search method"
+                        return "NOT_FOUND"
                     end try
                 end try
             end try
