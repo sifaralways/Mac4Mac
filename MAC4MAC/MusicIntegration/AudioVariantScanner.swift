@@ -241,15 +241,15 @@ class AudioVariantScanner {
                 end if
                 
                 set targetPlaylist to playlist "\(playlistName)"
-                set allTracks to tracks of targetPlaylist
                 
-                repeat with aTrack in allTracks
-                    if (name of aTrack is "\(title)") and (artist of aTrack is "\(artist)") then
-                        return "ALREADY_EXISTS"
-                    end if
-                end repeat
+                -- Use efficient AppleScript filtering instead of manual loop
+                set matchingTracks to (tracks of targetPlaylist whose name is "\(title)" and artist is "\(artist)")
                 
-                return "NOT_EXISTS"
+                if (count of matchingTracks) > 0 then
+                    return "ALREADY_EXISTS"
+                else
+                    return "NOT_EXISTS"
+                end if
             on error errMsg
                 return "DUPLICATE_CHECK_ERROR: " & errMsg
             end try
