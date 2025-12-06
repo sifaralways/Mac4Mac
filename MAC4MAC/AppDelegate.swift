@@ -1,4 +1,8 @@
+
 import AppKit
+import MusicKit
+import SwiftUI
+// Import the MusicKit test zone view
 import ScriptingBridge
 import Network
 import SwiftUI
@@ -31,12 +35,59 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Console window (formerly LogReader window)
     var consoleWindow: NSWindow?
     var consoleWindowDelegate: ConsoleWindowDelegate?
-    
+
+    // MusicKit Test Zone window
+    var musicKitTestWindow: NSWindow?
+    var musicKitTestWindowDelegate: ConsoleWindowDelegate?
+
     // Track the last processed track to detect artwork updates
     private var lastProcessedTrackID: String?
-    
+
     // Network permission helper
     private var permissionTriggerListener: NWListener?
+
+    @objc func openMusicKitTestZone() {
+        // If already open, bring to front
+        if let existingWindow = musicKitTestWindow {
+            if existingWindow.isVisible && existingWindow.contentViewController != nil {
+                existingWindow.makeKeyAndOrderFront(nil)
+                return
+            } else {
+                existingWindow.contentViewController = nil
+                existingWindow.delegate = nil
+                musicKitTestWindow = nil
+                musicKitTestWindowDelegate = nil
+            }
+        }
+        // Create new window with MusicKitTestZoneView
+        let contentView = MusicKitTestZoneView()
+        let hostingController = NSHostingController(rootView: contentView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 120, y: 120, width: 900, height: 600),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "MusicKit Testing Zone"
+        window.contentViewController = hostingController
+        window.center()
+        window.animationBehavior = .none
+        window.isReleasedWhenClosed = false
+        // Use ConsoleWindowDelegate for cleanup
+        musicKitTestWindowDelegate = ConsoleWindowDelegate { [weak self] in
+            DispatchQueue.main.async {
+                if let win = self?.musicKitTestWindow {
+                    win.contentViewController = nil
+                    win.delegate = nil
+                }
+                self?.musicKitTestWindow = nil
+                self?.musicKitTestWindowDelegate = nil
+            }
+        }
+        window.delegate = musicKitTestWindowDelegate
+        musicKitTestWindow = window
+        window.makeKeyAndOrderFront(nil)
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Migrate old log file to new daily rotation system (one-time operation)
         LogWriter.migrateOldLogFileIfNeeded()
@@ -397,11 +448,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         consoleItem.target = self
         menu.addItem(consoleItem)
         menu.addItem(NSMenuItem.separator())
+            // MusicKit Test Zone menu item
+            let musicKitTestItem = NSMenuItem(title: "🧪 MusicKit Test Zone", action: #selector(AppDelegate.openMusicKitTestZone), keyEquivalent: "t")
+            musicKitTestItem.target = self
+            menu.addItem(musicKitTestItem)
+        menu.addItem(NSMenuItem.separator())
         // Audio Variant Scanner menu item
         let scannerItem = NSMenuItem(title: "🔍 Scan for High Res & Atmos", action: #selector(scanForAudioVariants), keyEquivalent: "")
         scannerItem.target = self
         menu.addItem(scannerItem)
         menu.addItem(NSMenuItem.separator())
+
         let toggleMenu = NSMenu()
         for feature in FeatureToggle.allCases {
             let state = FeatureToggleManager.isEnabled(feature)
