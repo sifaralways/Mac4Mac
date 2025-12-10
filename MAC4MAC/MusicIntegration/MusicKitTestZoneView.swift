@@ -10,6 +10,8 @@ enum MusicKitFunction: String, CaseIterable, Identifiable {
     case fetchPlaylistDetails
     case search
     case fetchAudioVariants
+    case lookupByMusicItemID
+    case playByMusicItemID
     case customAPICall
 
     var id: String { rawValue }
@@ -23,6 +25,8 @@ enum MusicKitFunction: String, CaseIterable, Identifiable {
         case .fetchPlaylistDetails: return "Fetch Playlist Details by Name"
         case .search: return "Search"
         case .fetchAudioVariants: return "Fetch Audio Variants"
+        case .lookupByMusicItemID: return "Lookup by MusicItemID"
+        case .playByMusicItemID: return "Play by MusicItemID"
         case .customAPICall: return "Custom API Call"
         }
     }
@@ -59,8 +63,8 @@ struct MusicKitTestZoneView: View {
                 TextField("Playlist Name", text: $playlistName)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
             }
-            if selectedFunction == .fetchAudioVariants {
-                TextField("MusicKit Song ID", text: $musicKitID)
+            if selectedFunction == .fetchAudioVariants || selectedFunction == .lookupByMusicItemID || selectedFunction == .playByMusicItemID {
+                TextField("MusicKit ID (e.g., i.qQdgg1mUAKKo9x5)", text: $musicKitID)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
             }
             if selectedFunction == .customAPICall {
@@ -141,7 +145,7 @@ struct MusicKitTestZoneView: View {
                                         return
                                     }
                                     do {
-                                        let json = try JSONSerialization.jsonObject(with: data, options: [])
+                                        _ = try JSONSerialization.jsonObject(with: data, options: [])
                                         // For demonstration, just echo the input. Real implementation would require custom MusicKit API logic.
                                         jsonResult = "API: \(customAPIName)\nRequest: \(customAPIRequest)\n\n(Simulated call. Implement actual MusicKit API logic here.)"
                                     } catch {
@@ -213,6 +217,85 @@ struct MusicKitTestZoneView: View {
                         audioVariants: detailed.audioVariants?.map { "\($0)" } ?? []
                     )
                     jsonResult = try encodeToJson(result)
+                    
+                case .lookupByMusicItemID:
+                    guard !musicKitID.isEmpty else {
+                        error = "Please enter a MusicKit ID."
+                        isLoading = false
+                        return
+                    }
+                    let identifier = MusicItemID(musicKitID)
+                    let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: identifier)
+                    let response = try await request.response()
+                    guard let song = response.items.first else {
+                        error = "Song not found for ID: \(musicKitID)"
+                        isLoading = false
+                        return
+                    }
+                    // Fetch with all available properties
+                    let detailed = try await song.with([.albums, .artists, .audioVariants, .genres])
+                    
+                    // Create detailed output
+                    struct SongDetail: Encodable {
+                        let id: String
+                        let title: String
+                        let artistName: String
+                        let albumTitle: String?
+                        let duration: TimeInterval?
+                        let releaseDate: Date?
+                        let isrc: String?
+                        let genreNames: [String]
+                        let audioVariants: [String]
+                        let hasLyrics: Bool
+                        let contentRating: String?
+                        let hasPlayParameters: Bool
+                    }
+                    
+                    let detail = SongDetail(
+                        id: detailed.id.rawValue,
+                        title: detailed.title,
+                        artistName: detailed.artistName,
+                        albumTitle: detailed.albumTitle,
+                        duration: detailed.duration,
+                        releaseDate: detailed.releaseDate,
+                        isrc: detailed.isrc,
+                        genreNames: detailed.genreNames,
+                        audioVariants: detailed.audioVariants?.map { "\($0)" } ?? [],
+                        hasLyrics: detailed.hasLyrics,
+                        contentRating: detailed.contentRating.map { "\($0)" },
+                        hasPlayParameters: detailed.playParameters != nil
+                    )
+                    
+                    jsonResult = try encodeToJson(detail)
+                    
+                case .playByMusicItemID:
+                    guard !musicKitID.isEmpty else {
+                        error = "Please enter a MusicKit ID."
+                        isLoading = false
+                        return
+                    }
+                    let identifier = MusicItemID(musicKitID)
+                    let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: identifier)
+                    let response = try await request.response()
+                    guard let song = response.items.first else {
+                        error = "Song not found for ID: \(musicKitID)"
+                        isLoading = false
+                        return
+                    }
+                    
+                    // Play the song using ApplicationMusicPlayer (in-app playback)
+                    // This is the only reliable way to play by catalog ID on macOS
+                    // SystemMusicPlayer (Music.app control) is iOS-only
+                    let player = ApplicationMusicPlayer.shared
+                    player.queue = [song]
+                    try await player.play()
+                    
+                    jsonResult = try encodeToJson([
+                        "status": "Playing",
+                        "id": song.id.rawValue,
+                        "title": song.title,
+                        "artist": song.artistName
+                    ])
                 }
             } catch {
                 self.error = error.localizedDescription
