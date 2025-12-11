@@ -210,7 +210,7 @@ public class SongIDDatabase {
         
         defer { sqlite3_finalize(statement) }
         
-        sqlite3_bind_text(statement, 1, value, -1, nil)
+        sqlite3_bind_text(statement, 1, (value as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         
         guard sqlite3_step(statement) == SQLITE_ROW else {
             return nil
@@ -253,7 +253,7 @@ public class SongIDDatabase {
         
         defer { sqlite3_finalize(statement) }
         
-        sqlite3_bind_text(statement, 1, musicItemID, -1, nil)
+        sqlite3_bind_text(statement, 1, (musicItemID as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         
         return sqlite3_step(statement) == SQLITE_ROW
     }
@@ -276,7 +276,7 @@ public class SongIDDatabase {
         
         sqlite3_bind_int(statement, 1, isHealthy ? 1 : 0)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
-        sqlite3_bind_text(statement, 3, musicItemID, -1, nil)
+        sqlite3_bind_text(statement, 3, (musicItemID as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         
         return sqlite3_step(statement) == SQLITE_DONE
     }

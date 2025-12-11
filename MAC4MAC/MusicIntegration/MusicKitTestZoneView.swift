@@ -11,6 +11,7 @@ enum MusicKitFunction: String, CaseIterable, Identifiable {
     case search
     case fetchAudioVariants
     case lookupByMusicItemID
+    case lookupByPersistentID
     case playByMusicItemID
     case buildIDMappingDB
     case queryIDMappingDB
@@ -28,6 +29,7 @@ enum MusicKitFunction: String, CaseIterable, Identifiable {
         case .search: return "Search"
         case .fetchAudioVariants: return "Fetch Audio Variants"
         case .lookupByMusicItemID: return "Lookup by MusicItemID"
+        case .lookupByPersistentID: return "Lookup by PersistentID (Library Scan)"
         case .playByMusicItemID: return "Play by MusicItemID"
         case .buildIDMappingDB: return "🗄️ Build Song ID Mapping Database"
         case .queryIDMappingDB: return "🔍 Query ID Mapping Database"
@@ -47,6 +49,7 @@ struct MusicKitTestZoneView: View {
     @State private var customAPIRequest: String = "{\n  \"exampleKey\": \"exampleValue\"\n}"
     @State private var playlistName: String = ""
     @State private var forceRebuildDB: Bool = false
+    @State private var savedFilePath: URL? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -68,8 +71,8 @@ struct MusicKitTestZoneView: View {
                 TextField("Playlist Name", text: $playlistName)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
             }
-            if selectedFunction == .fetchAudioVariants || selectedFunction == .lookupByMusicItemID || selectedFunction == .playByMusicItemID || selectedFunction == .queryIDMappingDB {
-                TextField("MusicKit ID (e.g., i.qQdgg1mUAKKo9x5)", text: $musicKitID)
+            if selectedFunction == .fetchAudioVariants || selectedFunction == .lookupByMusicItemID || selectedFunction == .lookupByPersistentID || selectedFunction == .playByMusicItemID || selectedFunction == .queryIDMappingDB {
+                TextField(selectedFunction == .lookupByPersistentID ? "PersistentID (e.g., i.ZOMRB6Lc488daYM)" : "MusicKit ID (e.g., i.qQdgg1mUAKKo9x5)", text: $musicKitID)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
             }
             if selectedFunction == .buildIDMappingDB {
@@ -102,6 +105,18 @@ struct MusicKitTestZoneView: View {
             if let error = error {
                 Text("Error: \(error)").foregroundColor(.red)
             }
+            
+            if let filePath = savedFilePath {
+                HStack {
+                    Text("Response saved to file")
+                        .foregroundColor(.green)
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.selectFile(filePath.path, inFileViewerRootedAtPath: filePath.deletingLastPathComponent().path)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            
             ScrollView {
                 Text(jsonResult)
                     .font(.system(.body, design: .monospaced))
@@ -117,6 +132,7 @@ struct MusicKitTestZoneView: View {
         isLoading = true
         error = nil
         jsonResult = ""
+        savedFilePath = nil
         Task {
             do {
                 switch selectedFunction {
@@ -252,38 +268,109 @@ struct MusicKitTestZoneView: View {
                     // Fetch with all available properties
                     let detailed = try await song.with([.albums, .artists, .audioVariants, .genres])
                     
-                    // Create detailed output
-                    struct SongDetail: Encodable {
-                        let id: String
-                        let title: String
-                        let artistName: String
-                        let albumTitle: String?
-                        let duration: TimeInterval?
-                        let releaseDate: Date?
-                        let isrc: String?
-                        let genreNames: [String]
-                        let audioVariants: [String]
-                        let hasLyrics: Bool
-                        let contentRating: String?
-                        let hasPlayParameters: Bool
+                    // Full dump of the MusicKit response
+                    let fullJson = try encodeToJson(detailed)
+                    
+                    // Save to file if response is large (> 5KB)
+                    if fullJson.count > 5000 {
+                        let downloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+                        let fileName = "MusicKit_Lookup_\(musicKitID)_\(Date().timeIntervalSince1970).json"
+                        let fileURL = downloadsURL.appendingPathComponent(fileName)
+                        
+                        try fullJson.write(to: fileURL, atomically: true, encoding: .utf8)
+                        savedFilePath = fileURL
+                        jsonResult = "Response saved to: \(fileURL.path)\n\nFile size: \(fullJson.count) bytes\n\nPreview (first 1000 characters):\n\(String(fullJson.prefix(1000)))..."
+                    } else {
+                        jsonResult = fullJson
                     }
                     
-                    let detail = SongDetail(
-                        id: detailed.id.rawValue,
-                        title: detailed.title,
-                        artistName: detailed.artistName,
-                        albumTitle: detailed.albumTitle,
-                        duration: detailed.duration,
-                        releaseDate: detailed.releaseDate,
-                        isrc: detailed.isrc,
-                        genreNames: detailed.genreNames,
-                        audioVariants: detailed.audioVariants?.map { "\($0)" } ?? [],
-                        hasLyrics: detailed.hasLyrics,
-                        contentRating: detailed.contentRating.map { "\($0)" },
-                        hasPlayParameters: detailed.playParameters != nil
+                case .lookupByPersistentID:
+                    guard !musicKitID.isEmpty else {
+                        error = "Please enter a PersistentID."
+                        isLoading = false
+                        return
+                    }
+                    
+                    // Fetch entire library
+                    let request = MusicLibraryRequest<Song>()
+                    let startTime = Date()
+                    let response = try await request.response()
+                    let fetchDuration = Date().timeIntervalSince(startTime)
+                    
+                    // Search for the song
+                    let searchStart = Date()
+                    guard let song = response.items.first(where: { $0.id.rawValue == musicKitID }) else {
+                        error = "Song not found in library with PersistentID: \(musicKitID)\nLibrary size: \(response.items.count) songs\nFetch time: \(String(format: "%.2f", fetchDuration))s"
+                        isLoading = false
+                        return
+                    }
+                    let searchDuration = Date().timeIntervalSince(searchStart)
+                    
+                    // Build full response with timing info
+                    struct LibraryLookupResult: Encodable {
+                        let timings: TimingInfo
+                        let library: LibraryInfo
+                        let song: SongInfo
+                        
+                        struct TimingInfo: Encodable {
+                            let fetchLibrarySeconds: Double
+                            let searchSeconds: Double
+                            let totalSeconds: Double
+                        }
+                        
+                        struct LibraryInfo: Encodable {
+                            let totalSongs: Int
+                            let searchedID: String
+                        }
+                        
+                        struct SongInfo: Encodable {
+                            let id: String
+                            let title: String
+                            let artist: String
+                            let album: String?
+                            let duration: Double?
+                            let hasPlayParameters: Bool
+                            let playParameters: String?
+                            let genreNames: [String]
+                        }
+                    }
+                    
+                    let result = LibraryLookupResult(
+                        timings: LibraryLookupResult.TimingInfo(
+                            fetchLibrarySeconds: fetchDuration,
+                            searchSeconds: searchDuration,
+                            totalSeconds: fetchDuration + searchDuration
+                        ),
+                        library: LibraryLookupResult.LibraryInfo(
+                            totalSongs: response.items.count,
+                            searchedID: musicKitID
+                        ),
+                        song: LibraryLookupResult.SongInfo(
+                            id: song.id.rawValue,
+                            title: song.title,
+                            artist: song.artistName,
+                            album: song.albumTitle,
+                            duration: song.duration,
+                            hasPlayParameters: song.playParameters != nil,
+                            playParameters: song.playParameters != nil ? String(describing: song.playParameters!) : nil,
+                            genreNames: song.genreNames
+                        )
                     )
                     
-                    jsonResult = try encodeToJson(detail)
+                    let fullJson = try encodeToJson(result)
+                    
+                    // Save to file if response is large (> 5KB)
+                    if fullJson.count > 5000 {
+                        let downloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+                        let fileName = "MusicKit_LibraryLookup_\(musicKitID)_\(Date().timeIntervalSince1970).json"
+                        let fileURL = downloadsURL.appendingPathComponent(fileName)
+                        
+                        try fullJson.write(to: fileURL, atomically: true, encoding: .utf8)
+                        savedFilePath = fileURL
+                        jsonResult = "⏱️ Performance:\n  Library fetch: \(String(format: "%.2f", fetchDuration))s\n  Search: \(String(format: "%.2f", searchDuration))s\n  Total: \(String(format: "%.2f", fetchDuration + searchDuration))s\n\n📚 Library: \(response.items.count) songs scanned\n\n✅ Found: '\(song.title)' by '\(song.artistName)'\n\nFull response saved to: \(fileURL.path)\nFile size: \(fullJson.count) bytes\n\nPreview (first 1000 characters):\n\(String(fullJson.prefix(1000)))..."
+                    } else {
+                        jsonResult = "⏱️ Performance:\n  Library fetch: \(String(format: "%.2f", fetchDuration))s\n  Search: \(String(format: "%.2f", searchDuration))s\n  Total: \(String(format: "%.2f", fetchDuration + searchDuration))s\n\n📚 Library: \(response.items.count) songs scanned\n\n✅ Found: '\(song.title)' by '\(song.artistName)'\n\n" + fullJson
+                    }
                     
                 case .playByMusicItemID:
                     guard !musicKitID.isEmpty else {

@@ -78,6 +78,11 @@ public class SongIDMapper {
         for (index, song) in allSongs.enumerated() {
             let musicItemID = song.id.rawValue
             
+            // Debug: Log first few IDs to see format
+            if processedCount < 5 {
+                LogWriter.logNormal("   📝 Sample ID: \(musicItemID) - '\(song.title)' by '\(song.artistName)'")
+            }
+            
             // Skip if already processed (unless force rebuild)
             if !forceRebuild && db.exists(musicItemID) {
                 skippedCount += 1
@@ -101,6 +106,14 @@ public class SongIDMapper {
             
             let catalogID = getCatalogID(for: song)
             let legacyID = await getLegacyPersistentID(for: song)
+            
+            // Debug: Log first few complete records
+            if processedCount < 5 {
+                LogWriter.logNormal("   📊 Record \(processedCount + 1):")
+                LogWriter.logNormal("      MusicItemID (i.xxx): \(musicItemID)")
+                LogWriter.logNormal("      CatalogID (numeric): \(catalogID ?? "nil")")
+                LogWriter.logNormal("      LegacyPersistentID: \(legacyID ?? "nil")")
+            }
             
             let record = SongIDDatabase.SongRecord(
                 musicItemID: musicItemID,
@@ -165,30 +178,41 @@ public class SongIDMapper {
     
     /// Get catalog ID for a song (if available)
     private func getCatalogID(for song: Song) -> String? {
-        // For Apple Music catalog songs, check if they have playParameters
-        // This indicates it's a catalog song that can be played via Apple Music
+        // For Apple Music catalog songs, we want the NUMERIC catalog ID
+        // NOT the i.XXXXX format (that's the MusicItemID)
+        // The numeric ID is what's used for direct catalog lookups
         
-        // If song has playParameters, it's a catalog song
+        // Only catalog songs have playParameters
         guard song.playParameters != nil else {
-            // No play parameters = local/imported song only
             return nil
         }
         
-        // For catalog songs, the MusicItemID itself can serve as the catalog ID
-        // MusicKit uses the same ID for both in most cases
-        let rawID = song.id.rawValue
-        
-        // Check if it's a numeric ID (pure catalog format)
-        if rawID.allSatisfy({ $0.isNumber }) {
-            return rawID
+        // If song.id is already numeric, use it
+        let musicItemID = song.id.rawValue
+        if musicItemID.allSatisfy({ $0.isNumber }) {
+            return musicItemID
         }
         
-        // For i.XXXXX format IDs, these are still universal catalog IDs
-        // We can return the MusicItemID as it works for catalog lookups
-        if rawID.hasPrefix("i.") {
-            return rawID
+        // If song.id is i.XXXXX format, try to extract numeric ID from playParameters
+        if let playParams = song.playParameters {
+            let mirror = Mirror(reflecting: playParams)
+            for child in mirror.children {
+                if child.label == "id" {
+                    // PlayParameters.id might be Int or String
+                    if let numericID = child.value as? Int {
+                        return String(numericID)
+                    } else if let stringID = child.value as? String {
+                        // If it's numeric string, return it
+                        if stringID.allSatisfy({ $0.isNumber }) {
+                            return stringID
+                        }
+                    }
+                }
+            }
         }
         
+        // Fallback: if we can't extract numeric ID, return nil
+        // This means we only have the i.XXXXX format
         return nil
     }
     
