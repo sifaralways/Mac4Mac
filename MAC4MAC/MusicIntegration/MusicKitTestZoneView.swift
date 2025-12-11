@@ -12,6 +12,8 @@ enum MusicKitFunction: String, CaseIterable, Identifiable {
     case fetchAudioVariants
     case lookupByMusicItemID
     case playByMusicItemID
+    case buildIDMappingDB
+    case queryIDMappingDB
     case customAPICall
 
     var id: String { rawValue }
@@ -27,6 +29,8 @@ enum MusicKitFunction: String, CaseIterable, Identifiable {
         case .fetchAudioVariants: return "Fetch Audio Variants"
         case .lookupByMusicItemID: return "Lookup by MusicItemID"
         case .playByMusicItemID: return "Play by MusicItemID"
+        case .buildIDMappingDB: return "🗄️ Build Song ID Mapping Database"
+        case .queryIDMappingDB: return "🔍 Query ID Mapping Database"
         case .customAPICall: return "Custom API Call"
         }
     }
@@ -42,6 +46,7 @@ struct MusicKitTestZoneView: View {
     @State private var customAPIName: String = ""
     @State private var customAPIRequest: String = "{\n  \"exampleKey\": \"exampleValue\"\n}"
     @State private var playlistName: String = ""
+    @State private var forceRebuildDB: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -63,9 +68,21 @@ struct MusicKitTestZoneView: View {
                 TextField("Playlist Name", text: $playlistName)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
             }
-            if selectedFunction == .fetchAudioVariants || selectedFunction == .lookupByMusicItemID || selectedFunction == .playByMusicItemID {
+            if selectedFunction == .fetchAudioVariants || selectedFunction == .lookupByMusicItemID || selectedFunction == .playByMusicItemID || selectedFunction == .queryIDMappingDB {
                 TextField("MusicKit ID (e.g., i.qQdgg1mUAKKo9x5)", text: $musicKitID)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
+            }
+            if selectedFunction == .buildIDMappingDB {
+                Toggle("Force Rebuild (ignore existing data)", isOn: $forceRebuildDB)
+                    .toggleStyle(.switch)
+                Text("⚠️ This will scan your entire library and may take 10-30 minutes.")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                if !forceRebuildDB {
+                    Text("💡 Will resume from existing checkpoint if available.")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
             }
             if selectedFunction == .customAPICall {
                 TextField("API Endpoint or Function Name", text: $customAPIName)
@@ -296,6 +313,72 @@ struct MusicKitTestZoneView: View {
                         "title": song.title,
                         "artist": song.artistName
                     ])
+                    
+                case .buildIDMappingDB:
+                    let mode = forceRebuildDB ? "from scratch" : "with resume capability"
+                    jsonResult = "Building Song ID Mapping Database \(mode)...\nThis may take several minutes depending on library size.\nCheck logs for progress.\n"
+                    
+                    try await SongIDMapper.shared.buildDatabase(forceRebuild: forceRebuildDB)
+                    
+                    let stats = SongIDMapper.shared.getStatistics()
+                    jsonResult += "\n✅ Database Build Complete!\n\n"
+                    jsonResult += "Statistics:\n"
+                    jsonResult += "  Total Mappings: \(stats.totalMappings)\n"
+                    jsonResult += "  Complete Records: \(stats.complete)\n"
+                    jsonResult += "  Healthy Records: \(stats.healthy)\n"
+                    jsonResult += "  With Catalog ID: \(stats.withCatalogID)\n"
+                    jsonResult += "  With Legacy ID: \(stats.withLegacyID)\n"
+                    if let lastUpdate = stats.lastUpdated {
+                        jsonResult += "  Last Updated: \(lastUpdate)\n"
+                    }
+                    
+                case .queryIDMappingDB:
+                    guard !musicKitID.isEmpty else {
+                        error = "Please enter a MusicKit ID to lookup."
+                        isLoading = false
+                        return
+                    }
+                    
+                    let stats = SongIDMapper.shared.getStatistics()
+                    if stats.totalMappings == 0 {
+                        error = "Database is empty. Please build it first using '🗄️ Build Song ID Mapping Database'."
+                        isLoading = false
+                        return
+                    }
+                    
+                    if let mapping = SongIDMapper.shared.lookupByMusicItemID(musicKitID) {
+                        struct MappingResult: Encodable {
+                            let musicItemID: String
+                            let catalogID: String?
+                            let legacyPersistentID: String?
+                            let title: String?
+                            let artist: String?
+                            let album: String?
+                            let isComplete: Bool
+                            let isHealthy: Bool
+                            let createdAt: Date
+                            let updatedAt: Date
+                        }
+                        
+                        let result = MappingResult(
+                            musicItemID: mapping.musicItemID,
+                            catalogID: mapping.catalogID,
+                            legacyPersistentID: mapping.legacyPersistentID,
+                            title: mapping.title,
+                            artist: mapping.artist,
+                            album: mapping.album,
+                            isComplete: mapping.isComplete,
+                            isHealthy: mapping.isHealthy,
+                            createdAt: mapping.createdAt,
+                            updatedAt: mapping.updatedAt
+                        )
+                        
+                        jsonResult = try encodeToJson(result)
+                    } else {
+                        error = "No mapping found for ID: \(musicKitID)\n\nDatabase contains \(stats.totalMappings) mappings."
+                        isLoading = false
+                        return
+                    }
                 }
             } catch {
                 self.error = error.localizedDescription
