@@ -231,6 +231,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let isArtworkUpdate = trackInfo.artworkData != nil &&
                                  self.lastProcessedTrackID == trackInfo.persistentID
             
+            // Log callback type for debugging
+            let callbackType = isMinimalCallback ? "MINIMAL" : (isArtworkUpdate ? "ARTWORK" : "FULL")
+            LogWriter.logEssential("📲 CALLBACK RECEIVED: \(callbackType) for track \(trackInfo.persistentID.suffix(8)) | Artist: '\(trackInfo.artist)' | Album: '\(trackInfo.album)'")
+            
             // For full track info (not minimal callbacks), log the updated track separator with full details
             if !isMinimalCallback && !isArtworkUpdate {
                 LogWriter.logTrackSeparator(trackName: trackInfo.name, artist: trackInfo.artist, album: trackInfo.album, sampleRate: self.currentSampleRate)

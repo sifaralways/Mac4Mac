@@ -665,7 +665,7 @@ class Mac4MacWebSocketServer {
         
         LogWriter.logNormal("   Library/Catalog Status:")
         LogWriter.logNormal("     - song.hasLyrics: \(song.hasLyrics)")
-        LogWriter.logNormal("     - song.contentRating: \(song.contentRating?.description ?? "nil")")
+        LogWriter.logNormal("     - song.contentRating: \(song.contentRating.map { String(describing: $0) } ?? "nil")")
         
         LogWriter.logNormal("   Audio/Quality:")
         if let audioVariants = song.audioVariants {
