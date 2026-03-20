@@ -1,10 +1,13 @@
+
 import AppKit
+import MusicKit
+import SwiftUI
+// Import the MusicKit test zone view
 import ScriptingBridge
 import Network
 import SwiftUI
-
+import MusicKit
 // MARK: - Music ScriptingBridge Protocols
-
 @objc protocol MusicApplication {
     @objc optional var currentTrack: MusicTrack { get }
     @objc optional var running: Bool { get }
@@ -12,18 +15,15 @@ import SwiftUI
     @objc optional var libraryPlaylist: MusicPlaylist { get }
     @objc optional func make(_ newElement: String, at: Any?, withProperties: [String: Any]) -> Any
 }
-
 @objc protocol MusicPlaylist {
     @objc optional var name: String { get }
     @objc optional var tracks: [MusicTrack] { get }
     @objc optional func add(_ track: MusicTrack)
 }
-
 @objc protocol MusicTrack {
     @objc optional var persistentID: String { get }
     @objc optional var name: String { get }
 }
-
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var currentSampleRate: Double = 44100
@@ -35,22 +35,66 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Console window (formerly LogReader window)
     var consoleWindow: NSWindow?
     var consoleWindowDelegate: ConsoleWindowDelegate?
-    
+
+    // MusicKit Test Zone window
+    var musicKitTestWindow: NSWindow?
+    var musicKitTestWindowDelegate: ConsoleWindowDelegate?
+
     // Track the last processed track to detect artwork updates
     private var lastProcessedTrackID: String?
-    
+
     // Network permission helper
     private var permissionTriggerListener: NWListener?
 
+    @objc func openMusicKitTestZone() {
+        // If already open, bring to front
+        if let existingWindow = musicKitTestWindow {
+            if existingWindow.isVisible && existingWindow.contentViewController != nil {
+                existingWindow.makeKeyAndOrderFront(nil)
+                return
+            } else {
+                existingWindow.contentViewController = nil
+                existingWindow.delegate = nil
+                musicKitTestWindow = nil
+                musicKitTestWindowDelegate = nil
+            }
+        }
+        // Create new window with MusicKitTestZoneView
+        let contentView = MusicKitTestZoneView()
+        let hostingController = NSHostingController(rootView: contentView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 120, y: 120, width: 900, height: 600),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "MusicKit Testing Zone"
+        window.contentViewController = hostingController
+        window.center()
+        window.animationBehavior = .none
+        window.isReleasedWhenClosed = false
+        // Use ConsoleWindowDelegate for cleanup
+        musicKitTestWindowDelegate = ConsoleWindowDelegate { [weak self] in
+            DispatchQueue.main.async {
+                if let win = self?.musicKitTestWindow {
+                    win.contentViewController = nil
+                    win.delegate = nil
+                }
+                self?.musicKitTestWindow = nil
+                self?.musicKitTestWindowDelegate = nil
+            }
+        }
+        window.delegate = musicKitTestWindowDelegate
+        musicKitTestWindow = window
+        window.makeKeyAndOrderFront(nil)
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Migrate old log file to new daily rotation system (one-time operation)
         LogWriter.migrateOldLogFileIfNeeded()
         
         LogWriter.logEssential("Mac4Mac launched successfully")
-
         // Set log level based on feature toggle
         LogWriter.currentLogLevel = FeatureToggleManager.isEnabled(.logging) ? .debug : .essential
-
         // Set initial defaults for toggles only once
         let defaults: [FeatureToggle: Bool] = [
             .logging: true,
@@ -63,7 +107,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 FeatureToggleManager.set(feature, enabled: enabled)
             }
         }
-
         // Request network permissions first
         requestNetworkPermissions { [weak self] in
             self?.startServers()
@@ -149,7 +192,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             completion()
         }
     }
-
     func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let _ = statusItem?.button {
@@ -157,48 +199,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         updateMenu()
     }
-
     func updateStatusBarTitle() {
         guard let button = statusItem?.button else { return }
-
         let sampleRateString = String(format: " %.1f kHz", currentSampleRate / 1000.0)
-
         guard let icon = NSImage(named: "AppIcon") else {
             button.title = sampleRateString
             return
         }
-
         icon.size = NSSize(width: 18, height: 18)
         icon.isTemplate = true // for dark/light mode
-
         let attachment = NSTextAttachment()
         attachment.image = icon
         let iconString = NSAttributedString(attachment: attachment)
-
         // Offset the baseline so it aligns better with text
         let baselineOffset = NSAttributedString(string: sampleRateString, attributes: [
             .baselineOffset: 3
         ])
-
         let fullString = NSMutableAttributedString()
         fullString.append(iconString)
         fullString.append(baselineOffset)
-
         button.attributedTitle = fullString
     }
-
     func setupTrackMonitor() {
         LogWriter.logEssential("Starting track monitor with priority-based processing")
-
         trackChangeMonitor.onTrackChange = { [weak self] trackInfo in
             guard let self = self else { return }
-
             // Check if this is a minimal callback (for sample rate sync) or full callback
             let isMinimalCallback = trackInfo.artist == "Loading..." && trackInfo.album == "Loading..."
             
             // Check if this is an artwork update (same track, but with artwork)
             let isArtworkUpdate = trackInfo.artworkData != nil &&
                                  self.lastProcessedTrackID == trackInfo.persistentID
+            
+            // Log callback type for debugging
+            let callbackType = isMinimalCallback ? "MINIMAL" : (isArtworkUpdate ? "ARTWORK" : "FULL")
+            LogWriter.logEssential("📲 CALLBACK RECEIVED: \(callbackType) for track \(trackInfo.persistentID.suffix(8)) | Artist: '\(trackInfo.artist)' | Album: '\(trackInfo.album)'")
             
             // For full track info (not minimal callbacks), log the updated track separator with full details
             if !isMinimalCallback && !isArtworkUpdate {
@@ -217,9 +252,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.lastProcessedTrackID = trackInfo.persistentID
             }
         }
-
         trackChangeMonitor.startMonitoring()
-
         // Force initial track update
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             LogWriter.logNormal("Triggering initial track check")
@@ -328,7 +361,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             artworkBase64 = artworkData.base64EncodedString()
             LogWriter.logNormal("Artwork available (\(artworkData.count) bytes)")
         }
-
         // 📱 PHASE 1: Send track info immediately (excellent UX)
         httpServer.updateTrackData(
             trackName: trackInfo.name,
@@ -338,7 +370,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             isPlaying: true,
             artworkBase64: artworkBase64
         )
-
         webSocketServer.broadcastTrackUpdate(
             trackName: trackInfo.name,
             artist: trackInfo.artist,
@@ -373,7 +404,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             artworkBase64 = artworkData.base64EncodedString()
             LogWriter.logNormal("🖼️ Artwork updated (\(artworkData.count) bytes)")
         }
-
         // Update HTTP server with artwork (keep existing track info)
         httpServer.updateTrackData(
             trackName: trackInfo.name,
@@ -383,7 +413,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             isPlaying: true,
             artworkBase64: artworkBase64
         )
-
         // Broadcast artwork update via WebSocket
         webSocketServer.broadcastTrackUpdate(
             trackName: trackInfo.name,
@@ -396,15 +425,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         LogWriter.logEssential("🖼️ ✅ ARTWORK UPDATE COMPLETE: Remote clients updated with artwork")
     }
-
     func updateMenu() {
         let menu = NSMenu()
-
         let deviceName = AudioManager.getOutputDeviceName() ?? "Unknown"
         menu.addItem(withTitle: "🎧 Device: \(deviceName)", action: nil, keyEquivalent: "")
         menu.addItem(withTitle: String(format: "📈 Sample Rate: %.1f kHz", currentSampleRate / 1000.0), action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "🧪 Bit Depth: 32-bit (fixed)", action: nil, keyEquivalent: "")
-
         let overrideMenu = NSMenu()
         let supportedRates = AudioManager.getAvailableSampleRates()
         for rate in supportedRates {
@@ -417,16 +443,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let overrideSubmenu = NSMenuItem(title: "🎚️ Override Sample Rate", action: nil, keyEquivalent: "")
         menu.setSubmenu(overrideMenu, for: overrideSubmenu)
         menu.addItem(overrideSubmenu)
-
         let midiItem = NSMenuItem(title: "🎛️ Open Audio MIDI Setup", action: #selector(openAudioMIDISetup), keyEquivalent: "")
         midiItem.target = self
         menu.addItem(midiItem)
         menu.addItem(NSMenuItem.separator())
-
         // Log Reader menu item
         let consoleItem = NSMenuItem(title: "�️ Open Full Console", action: #selector(openFullConsole), keyEquivalent: "l")
         consoleItem.target = self
         menu.addItem(consoleItem)
+        menu.addItem(NSMenuItem.separator())
+            // MusicKit Test Zone menu item
+            let musicKitTestItem = NSMenuItem(title: "🧪 MusicKit Test Zone", action: #selector(AppDelegate.openMusicKitTestZone), keyEquivalent: "t")
+            musicKitTestItem.target = self
+            menu.addItem(musicKitTestItem)
+        menu.addItem(NSMenuItem.separator())
+        // Audio Variant Scanner menu item
+        let scannerItem = NSMenuItem(title: "🔍 Scan for High Res & Atmos", action: #selector(scanForAudioVariants), keyEquivalent: "")
+        scannerItem.target = self
+        menu.addItem(scannerItem)
         menu.addItem(NSMenuItem.separator())
 
         let toggleMenu = NSMenu()
@@ -441,25 +475,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toggleSubmenu = NSMenuItem(title: "🛠️ Features", action: nil, keyEquivalent: "")
         menu.setSubmenu(toggleMenu, for: toggleSubmenu)
         menu.addItem(toggleSubmenu)
-
         menu.addItem(NSMenuItem.separator())
-
         // Network status info
         let networkItem = NSMenuItem(title: "🌐 Network: Servers running", action: nil, keyEquivalent: "")
         networkItem.isEnabled = false
         menu.addItem(networkItem)
-
         menu.addItem(NSMenuItem.separator())
-
         // Version + Build (disabled, greyed out)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         let versionItem = NSMenuItem(title: "Version \(version) (Build \(build))", action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         menu.addItem(versionItem)
-
         menu.addItem(withTitle: "Quit MAC4MAC", action: #selector(quitApp), keyEquivalent: "q")
-
         statusItem?.menu = menu
     }
     
@@ -477,7 +505,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             updateMenu()
         }
     }
-
     @objc func openAudioMIDISetup() {
         let path = "/System/Applications/Utilities/Audio MIDI Setup.app"
         let url = URL(fileURLWithPath: path)
@@ -490,7 +517,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
-
     @objc func toggleFeature(_ sender: NSMenuItem) {
         guard let feature = sender.representedObject as? FeatureToggle else { return }
         FeatureToggleManager.toggle(feature)
@@ -503,7 +529,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         LogWriter.logNormal("Toggled \(feature.displayName) → \(FeatureToggleManager.isEnabled(feature))")
         updateMenu()
     }
-
     @objc func quitApp() {
         NSApp.terminate(nil)
     }
@@ -561,7 +586,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         consoleWindow = window
         window.makeKeyAndOrderFront(nil)
     }
-
+    @objc func scanForAudioVariants() {
+        LogWriter.logEssential("🔍 Starting Audio Variant Scanner...")
+        
+        // Run the scanner in background to avoid blocking UI
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let scanner = AudioVariantScanner()
+            Task {
+                await scanner.performScan()
+            }
+        }
+    }
     func applicationWillTerminate(_ notification: Notification) {
         LogWriter.logEssential("Mac4Mac shutting down")
         permissionTriggerListener?.cancel()

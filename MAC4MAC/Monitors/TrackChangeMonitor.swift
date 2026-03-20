@@ -10,6 +10,13 @@ class TrackChangeMonitor {
     // Track state for each track ID to prevent duplicate callbacks
     private var trackStates: [String: TrackState] = [:]
     
+    // Cleanup counter for periodic cache maintenance
+    private var checkCounter: Int = 0
+    private let cleanupInterval: Int = 30 // Clean every 30 checks (30 seconds)
+    
+    // Cache limits
+    private let maxArtworkCacheSize: Int = 50 // Keep last 50 artworks (reasonable for typical session)
+    
     struct TrackState {
         var hasTrackInfo: Bool = false
         var hasArtwork: Bool = false
@@ -47,6 +54,13 @@ class TrackChangeMonitor {
     }
     
     private func checkForTrackChange() {
+        // Periodic cache cleanup to prevent unbounded growth
+        checkCounter += 1
+        if checkCounter >= cleanupInterval {
+            cleanupExpiredCaches()
+            checkCounter = 0
+        }
+        
         // STEP 1: Quick check for track ID change (lightweight AppleScript)
         let quickCheckScript = """
         tell application "Music"
@@ -91,6 +105,14 @@ class TrackChangeMonitor {
         
         LogWriter.logEssential("Track change detected: \(currentTrackID)")
         
+        // Clear state for the previous track to allow replays
+        if let previousTrackID = self.lastTrackID {
+            if trackStates[previousTrackID] != nil {
+                trackStates[previousTrackID] = nil
+                LogWriter.logEssential("🧹 CLEANUP: Cleared state for previous track \(previousTrackID.suffix(8))")
+            }
+        }
+        
         // Log immediate track separator for clear visual separation
         LogWriter.logTrackChangeDetected(trackID: currentTrackID)
         
@@ -115,15 +137,19 @@ class TrackChangeMonitor {
         // Initialize track state
         if trackStates[trackID] == nil {
             trackStates[trackID] = TrackState()
+            LogWriter.logEssential("🔧 INIT: Created new track state for \(trackID.suffix(8))")
         }
         
         // Only send initial callback once per track
         guard let state = trackStates[trackID], !state.hasSentInitialCallback else {
+            LogWriter.logEssential("⏭️ SKIP P1: Sample rate sync already sent for track \(trackID.suffix(8)) (hasSentInitialCallback=\(trackStates[trackID]?.hasSentInitialCallback ?? false))")
             return
         }
         
         // Use cached track name if available, otherwise use generic name
         let trackName = trackInfoCache[trackID]?.name ?? "Current Track"
+        
+        LogWriter.logEssential("✅ P1 CALLBACK: Firing minimal callback for track \(trackID.suffix(8))")
         
         // IMMEDIATE: Trigger callback for sample rate sync (don't wait for detection)
         let minimalTrackInfo = TrackInfo(
@@ -136,6 +162,7 @@ class TrackChangeMonitor {
         
         // Mark as sent and call immediately - this triggers sample rate detection in AppDelegate
         trackStates[trackID]?.hasSentInitialCallback = true
+        LogWriter.logEssential("🏁 P1 STATE: Marked hasSentInitialCallback=true for \(trackID.suffix(8))")
         DispatchQueue.main.async { [weak self] in
             self?.onTrackChange?(minimalTrackInfo)
         }
@@ -147,11 +174,13 @@ class TrackChangeMonitor {
         
         // Check cache first
         if let cachedInfo = trackInfoCache[trackID], !cachedInfo.isExpired {
+            LogWriter.logEssential("🗄️ P2 CACHE HIT: Using cached info for \(trackID.suffix(8)): \(cachedInfo.name)")
             LogWriter.logWithSession("Using cached track info", level: .debug, phase: "P2", status: "CACHE")
             updateWithCachedInfo(trackID: trackID, cachedInfo: cachedInfo)
             return
         }
         
+        LogWriter.logEssential("📡 P2 CACHE MISS: Fetching track info for \(trackID.suffix(8))")
         DispatchQueue.global().async { [weak self] in
             self?.fetchTrackInfo(for: trackID)
         }
@@ -447,6 +476,46 @@ class TrackChangeMonitor {
             self?.onTrackChange?(trackInfo)
         }
     }
+    
+    // MARK: - Cache Management
+    
+    /// Removes expired entries from caches to prevent unbounded growth
+    private func cleanupExpiredCaches() {
+        let beforeTrackInfoCount = trackInfoCache.count
+        let beforeArtworkCount = artworkCache.count
+        
+        // Remove expired track info entries (5-minute TTL)
+        trackInfoCache = trackInfoCache.filter { !$0.value.isExpired }
+        
+        // Remove track states for tracks no longer in cache
+        let validTrackIDs = Set(trackInfoCache.keys).union(Set([lastTrackID].compactMap { $0 }))
+        trackStates = trackStates.filter { validTrackIDs.contains($0.key) }
+        
+        // Artwork cleanup strategy: Only remove if we exceed size limit
+        // Keep artwork for tracks with valid track info + current track (more lenient than track info TTL)
+        if artworkCache.count > maxArtworkCacheSize {
+            // Remove artwork for expired tracks first
+            let artworkKeysToKeep = validTrackIDs
+            artworkCache = artworkCache.filter { artworkKeysToKeep.contains($0.key) }
+            
+            // If still over limit after removing expired, remove oldest entries
+            // (This is a simple cleanup; proper LRU would require tracking access timestamps)
+            if artworkCache.count > maxArtworkCacheSize {
+                let excessCount = artworkCache.count - maxArtworkCacheSize
+                let keysToRemove = Array(artworkCache.keys.prefix(excessCount))
+                keysToRemove.forEach { artworkCache.removeValue(forKey: $0) }
+                LogWriter.logNormal("🧹 Artwork cache exceeded limit, removed \(excessCount) oldest entries")
+            }
+        }
+        
+        let removedTrackInfo = beforeTrackInfoCount - trackInfoCache.count
+        let removedArtwork = beforeArtworkCount - artworkCache.count
+        
+        if removedTrackInfo > 0 || removedArtwork > 0 {
+            LogWriter.logNormal("🧹 Cache cleanup: Removed \(removedTrackInfo) track info, \(removedArtwork) artwork entries (artwork cache: \(artworkCache.count)/\(maxArtworkCacheSize))")
+        }
+    }
+    
     func stopMonitoring() {
         LogWriter.logEssential("Track change monitoring stopped")
         timer?.invalidate()

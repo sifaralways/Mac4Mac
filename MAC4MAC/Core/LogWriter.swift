@@ -1,7 +1,7 @@
 import Foundation
 
-struct LogWriter {
-    enum LogLevel: Int, CaseIterable {
+public struct LogWriter {
+    public enum LogLevel: Int, CaseIterable {
         case essential = 0  // Only critical logs (track changes, sample rate, errors)
         case normal = 1     // Essential + important events
         case debug = 2      // All logs (for debugging)
@@ -30,12 +30,12 @@ struct LogWriter {
     }
     
     // Set to .essential for production, .debug for development
-    static var currentLogLevel: LogLevel = .essential
+    public static var currentLogLevel: LogLevel = .essential
     
     // Maximum number of log files to keep (default: 30 days)
-    static var maxLogFiles: Int = 30
+    public static var maxLogFiles: Int = 30
     
-    static func log(_ message: String, level: LogLevel = .normal) {
+    public static func log(_ message: String, level: LogLevel = .normal) {
         // Only log if message level is at or above current level
         guard level.rawValue <= currentLogLevel.rawValue else { return }
         
@@ -69,15 +69,15 @@ struct LogWriter {
     }
     
     // Convenience methods for different log levels
-    static func logEssential(_ message: String) {
+    public static func logEssential(_ message: String) {
         log(message, level: .essential)
     }
     
-    static func logNormal(_ message: String) {
+    public static func logNormal(_ message: String) {
         log(message, level: .normal)
     }
     
-    static func logDebug(_ message: String) {
+    public static func logDebug(_ message: String) {
         log(message, level: .debug)
     }
     
@@ -192,7 +192,7 @@ struct LogWriter {
     }
     
     /// Logs raw message without timestamp formatting (for separators)
-    private static func logRaw(_ message: String) {
+    static func logRaw(_ message: String) {
         let logFile = currentLogFile
         let fullMessage = "\(message)\n"
         
@@ -217,14 +217,14 @@ struct LogWriter {
     // MARK: - Helper Methods
     
     /// Formats timestamp in a more readable format
-    private static func formatTimestamp(_ date: Date) -> String {
+    static func formatTimestamp(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss.SSS"
         return formatter.string(from: date)
     }
     
     /// Formats the log level tag in a compact format
-    private static func formatLevelTag(_ level: LogLevel) -> String {
+    static func formatLevelTag(_ level: LogLevel) -> String {
         switch level {
         case .essential: return "🎵 ESS"
         case .normal: return "ℹ️ NOR"
@@ -233,7 +233,7 @@ struct LogWriter {
     }
     
     /// Creates the log directory if it doesn't exist
-    private static func createLogDirectoryIfNeeded() {
+    static func createLogDirectoryIfNeeded() {
         do {
             try FileManager.default.createDirectory(at: logDirectory, 
                                                   withIntermediateDirectories: true, 
@@ -244,7 +244,7 @@ struct LogWriter {
     }
     
     /// Removes old log files to prevent unlimited accumulation
-    private static func cleanupOldLogFiles() {
+    static func cleanupOldLogFiles() {
         do {
             let fileManager = FileManager.default
             

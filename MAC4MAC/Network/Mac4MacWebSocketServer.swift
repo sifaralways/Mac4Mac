@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import CommonCrypto
+import MusicKit
 
 class Mac4MacWebSocketServer {
     private var listener: NWListener?
@@ -19,6 +20,7 @@ class Mac4MacWebSocketServer {
         case audioConfigUpdate = "audio_config_update"
         case playStateUpdate = "play_state_update"
         case remoteCommand = "remote_command"
+        case remoteCommandAck = "remote_command_ack"
         case heartbeat = "heartbeat"
         case serverInfo = "server_info"
         case progressUpdate = "progress_update"
@@ -406,7 +408,7 @@ class Mac4MacWebSocketServer {
         switch messageType {
         case .remoteCommand:
             if let data = json["data"] as? [String: Any] {
-                handleRemoteCommand(data)
+                handleRemoteCommand(data, from: wsConnection)
             }
         case .seekCommand:
             if let data = json["data"] as? [String: Any] {
@@ -430,12 +432,19 @@ class Mac4MacWebSocketServer {
         }
     }
     
-    private func handleRemoteCommand(_ data: [String: Any]) {
+    private func handleRemoteCommand(_ data: [String: Any], from wsConnection: WebSocketConnection) {
         guard let command = data["command"] as? String else { return }
-        
+
         LogWriter.logNormal("Remote command: \(command)")
-        
+
         switch command {
+        case "play_song":
+            LogWriter.logNormal("play_song request payload: \(data)")
+            if let appleMusicURL = data["appleMusicURL"] as? String {
+                LogWriter.logNormal("play_song includes Apple Music URL: \(appleMusicURL)")
+            }
+            let remoteCommandData = RemoteCommandData(command: command, dictionary: data)
+            handlePlaySongCommand(remoteCommandData, from: wsConnection)
         case "play_pause":
             let script = "tell application \"Music\" to playpause"
             executeAppleScript(script)
@@ -459,6 +468,226 @@ class Mac4MacWebSocketServer {
         default:
             break
         }
+    }
+
+    private struct RemoteCommandData {
+        let command: String
+        let catalogID: String?
+        let playParametersID: String?
+        let persistentID: String?
+        let title: String?
+        let artist: String?
+        let album: String?
+        let appleMusicURL: String?
+
+        init(command: String, dictionary: [String: Any]) {
+            self.command = command
+            self.catalogID = Self.cleanedString(dictionary["catalogID"])
+            self.playParametersID = Self.cleanedString(dictionary["playParametersID"])
+            self.persistentID = Self.cleanedString(dictionary["persistentID"])
+            self.title = Self.cleanedString(dictionary["title"])
+            self.artist = Self.cleanedString(dictionary["artist"])
+            self.album = Self.cleanedString(dictionary["album"])
+            self.appleMusicURL = Self.cleanedString(dictionary["appleMusicURL"])
+        }
+
+        private static func cleanedString(_ rawValue: Any?) -> String? {
+            guard let raw = rawValue as? String else { return nil }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    private enum RemoteCommandError: LocalizedError {
+        case missingIdentifier
+        case catalogLookupFailed(String)
+        case identifierLookupFailed(String)
+        case libraryLookupFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .missingIdentifier:
+                return "No identifier was provided for play_song"
+            case .catalogLookupFailed(let id):
+                return "Unable to resolve catalog ID: \(id)"
+            case .identifierLookupFailed(let id):
+                return "Unable to resolve identifier: \(id)"
+            case .libraryLookupFailed(let id):
+                return "Unable to find library item for persistent ID: \(id)"
+            }
+        }
+    }
+
+    private func handlePlaySongCommand(_ data: RemoteCommandData, from wsConnection: WebSocketConnection) {
+        Task { [weak self, weak wsConnection] in
+            guard let self = self, let wsConnection = wsConnection else { return }
+
+            do {
+                let song = try await self.resolveSong(for: data)
+                try await self.playSongWithMusicKit(song)
+                let friendlyTitle = data.title ?? song.title ?? song.artistName ?? song.albumTitle ?? data.catalogID ?? "song"
+                let message = "Now playing: \(friendlyTitle)"
+                self.sendRemoteCommandAck(command: data.command, success: true, details: message, to: wsConnection)
+            } catch {
+                let details = error.localizedDescription
+                self.sendRemoteCommandAck(command: data.command, success: false, details: details, to: wsConnection)
+            }
+        }
+    }
+
+    private func sendRemoteCommandAck(command: String, success: Bool, details: String, to wsConnection: WebSocketConnection) {
+        let ackData: [String: Any] = [
+            "command": command,
+            "success": success,
+            "details": details
+        ]
+        let message = WebSocketMessage(type: .remoteCommandAck, data: ackData)
+        sendWebSocketMessage(to: wsConnection, message: message)
+    }
+
+    private func resolveSong(for data: RemoteCommandData) async throws -> Song {
+        LogWriter.logNormal("🔍 Song Resolution Flow:")
+        LogWriter.logNormal("   Available IDs in request:")
+        LogWriter.logNormal("     1. catalogID: \(data.catalogID ?? "nil")")
+        LogWriter.logNormal("     2. playParametersID: \(data.playParametersID ?? "nil")")
+        LogWriter.logNormal("     3. persistentID: \(data.persistentID ?? "nil")")
+        
+        // Priority 1: Try catalogID (numeric Apple Music Store ID)
+        if let catalogID = data.catalogID {
+            LogWriter.logNormal("   → Using catalogID (priority 1): \(catalogID)")
+            return try await songFromCatalogID(catalogID, failure: .catalogLookupFailed(catalogID))
+        }
+        
+        // Priority 2: Try playParametersID (often same as catalogID)
+        if let playParametersID = data.playParametersID {
+            LogWriter.logNormal("   → Using playParametersID (priority 2): \(playParametersID)")
+            return try await songFromCatalogID(playParametersID, failure: .identifierLookupFailed(playParametersID))
+        }
+        
+        // Priority 3: Try persistentID (MusicItemID - can be i.XXXXX or numeric)
+        if let persistentID = data.persistentID {
+            LogWriter.logNormal("   → Using persistentID (priority 3): \(persistentID)")
+            return try await songFromPersistentID(persistentID)
+        }
+        
+        LogWriter.logEssential("   ❌ No valid identifier provided")
+        throw RemoteCommandError.missingIdentifier
+    }
+
+    private func songFromCatalogID(_ catalogID: String, failure errorCase: RemoteCommandError) async throws -> Song {
+        LogWriter.logNormal("🔍 MusicKit API Call: MusicCatalogResourceRequest<Song>")
+        LogWriter.logNormal("   Request: matching id = \(catalogID)")
+        
+        let identifier = MusicItemID(catalogID)
+        let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: identifier)
+        
+        let startTime = Date()
+        let response = try await request.response()
+        let duration = Date().timeIntervalSince(startTime)
+        
+        LogWriter.logNormal("   Response received in \(String(format: "%.2f", duration))s")
+        LogWriter.logNormal("   Items count: \(response.items.count)")
+        
+        guard let song = response.items.first else {
+            LogWriter.logEssential("   ❌ No song found in response")
+            throw errorCase
+        }
+        
+        // Log full song details
+        LogWriter.logNormal("   ✅ Found: '\(song.title)' by '\(song.artistName)'")
+        LogWriter.logNormal("   Response Details:")
+        LogWriter.logNormal("     - Song ID: \(song.id.rawValue)")
+        LogWriter.logNormal("     - Album: \(song.albumTitle ?? "N/A")")
+        LogWriter.logNormal("     - Duration: \(song.duration?.formatted() ?? "N/A")s")
+        LogWriter.logNormal("     - ISRC: \(song.isrc ?? "N/A")")
+        LogWriter.logNormal("     - Has PlayParameters: \(song.playParameters != nil)")
+        if let playParams = song.playParameters {
+            LogWriter.logNormal("     - PlayParameters: \(String(describing: playParams))")
+        }
+        LogWriter.logNormal("     - Has Lyrics: \(song.hasLyrics)")
+        LogWriter.logNormal("     - Genre Names: \(song.genreNames.joined(separator: ", "))")
+        if let variants = song.audioVariants {
+            LogWriter.logNormal("     - Audio Variants: \(variants.map { "\($0)" }.joined(separator: ", "))")
+        }
+        
+        return song
+    }
+
+    private func songFromPersistentID(_ persistentID: String) async throws -> Song {
+        LogWriter.logNormal("🔍 MusicKit API Call: MusicLibraryRequest<Song>")
+        LogWriter.logNormal("   Searching for persistentID: \(persistentID)")
+        
+        let request = MusicLibraryRequest<Song>()
+        
+        let startTime = Date()
+        let response = try await request.response()
+        let duration = Date().timeIntervalSince(startTime)
+        
+        LogWriter.logNormal("   Response received in \(String(format: "%.2f", duration))s")
+        LogWriter.logNormal("   Total library songs: \(response.items.count)")
+        
+        guard let song = response.items.first(where: { $0.id.rawValue == persistentID }) else {
+            LogWriter.logEssential("   ❌ Song not found in library with ID: \(persistentID)")
+            throw RemoteCommandError.libraryLookupFailed(persistentID)
+        }
+        
+        LogWriter.logNormal("   ✅ Found in library: '\(song.title)' by '\(song.artistName)'")
+        LogWriter.logNormal("   ═══════════════════════════════════════════")
+        LogWriter.logNormal("   📋 COMPLETE SONG OBJECT DUMP (for AppleScript planning):")
+        LogWriter.logNormal("   ═══════════════════════════════════════════")
+        LogWriter.logNormal("   Basic Properties:")
+        LogWriter.logNormal("     - song.id.rawValue: \(song.id.rawValue)")
+        LogWriter.logNormal("     - song.title: \(song.title)")
+        LogWriter.logNormal("     - song.artistName: \(song.artistName)")
+        LogWriter.logNormal("     - song.albumTitle: \(song.albumTitle ?? "nil")")
+        LogWriter.logNormal("     - song.duration: \(song.duration?.description ?? "nil")")
+        LogWriter.logNormal("     - song.releaseDate: \(song.releaseDate?.description ?? "nil")")
+        LogWriter.logNormal("     - song.genreNames: \(song.genreNames)")
+        LogWriter.logNormal("     - song.isrc: \(song.isrc ?? "nil")")
+        LogWriter.logNormal("     - song.composerName: \(song.composerName ?? "nil")")
+        LogWriter.logNormal("     - song.discNumber: \(song.discNumber?.description ?? "nil")")
+        LogWriter.logNormal("     - song.trackNumber: \(song.trackNumber?.description ?? "nil")")
+        
+        LogWriter.logNormal("   PlayParameters:")
+        if let playParams = song.playParameters {
+            LogWriter.logNormal("     - Has PlayParameters: YES")
+            LogWriter.logNormal("     - PlayParameters (full): \(String(describing: playParams))")
+            
+            // Try to extract ID via reflection
+            let mirror = Mirror(reflecting: playParams)
+            LogWriter.logNormal("     - PlayParameters Mirror dump:")
+            for child in mirror.children {
+                LogWriter.logNormal("       • \(child.label ?? "unlabeled"): \(child.value)")
+            }
+        } else {
+            LogWriter.logNormal("     - Has PlayParameters: NO")
+        }
+        
+        LogWriter.logNormal("   Library/Catalog Status:")
+        LogWriter.logNormal("     - song.hasLyrics: \(song.hasLyrics)")
+        LogWriter.logNormal("     - song.contentRating: \(song.contentRating.map { String(describing: $0) } ?? "nil")")
+        
+        LogWriter.logNormal("   Audio/Quality:")
+        if let audioVariants = song.audioVariants {
+            LogWriter.logNormal("     - Audio Variants: \(audioVariants.map { "\($0)" })")
+        } else {
+            LogWriter.logNormal("     - Audio Variants: nil")
+        }
+        
+        LogWriter.logNormal("   🎯 Key Question: Can we extract catalog ID or use metadata for AppleScript?")
+        LogWriter.logNormal("   ═══════════════════════════════════════════")
+        
+        return song
+    }
+
+    private func playSongWithMusicKit(_ song: Song) async throws {
+        // On macOS, MusicKit only provides ApplicationMusicPlayer (plays in-app)
+        // SystemMusicPlayer (Music.app control) is iOS-only
+        // AppleScript with catalog IDs doesn't work reliably
+        // So we use ApplicationMusicPlayer - it's the only reliable option
+        let player = ApplicationMusicPlayer.shared
+        player.queue = [song]
+        try await player.play()
     }
     
     private func handleSeekCommand(_ data: [String: Any]) {
