@@ -74,15 +74,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func startServers() {
-        LogWriter.logEssential("Starting network services...")
+        LogWriter.logEssential("Starting network services...", module: .networkAndServer)
         httpServer.startServer()
         webSocketServer.startServer()
         bonjourService.startAdvertising()
-        LogWriter.logEssential("All network services started")
+        LogWriter.logEssential("All network services started", module: .networkAndServer)
     }
     
     private func requestNetworkPermissions(completion: @escaping () -> Void) {
-        LogWriter.logNormal("Requesting network permissions...")
+        LogWriter.logNormal("Requesting network permissions...", module: .networkAndServer)
         
         // Create a temporary listener to trigger the permission dialog
         let parameters = NWParameters.tcp
@@ -101,7 +101,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             permissionTriggerListener?.serviceRegistrationUpdateHandler = { serviceRegistration in
                 switch serviceRegistration {
                 case .add(_):
-                    LogWriter.logNormal("Network permission granted")
+                    LogWriter.logNormal("Network permission granted", module: .networkAndServer)
                     // Stop the permission trigger listener
                     self.permissionTriggerListener?.cancel()
                     self.permissionTriggerListener = nil
@@ -110,7 +110,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         completion()
                     }
                 case .remove(_):
-                    LogWriter.logDebug("Network service registration removed")
+                    LogWriter.logDebug("Network service registration removed", module: .networkAndServer)
                 @unknown default:
                     break
                 }
@@ -119,13 +119,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             permissionTriggerListener?.stateUpdateHandler = { state in
                 switch state {
                 case .failed(let error):
-                    LogWriter.logEssential("Permission trigger failed: \(error)")
+                    LogWriter.logEssential("Permission trigger failed: \(error)", module: .networkAndServer)
                     // Start servers anyway
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         completion()
                     }
                 case .ready:
-                    LogWriter.logDebug("Permission trigger ready")
+                    LogWriter.logDebug("Permission trigger ready", module: .networkAndServer)
                 default:
                     break
                 }
@@ -136,7 +136,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Fallback timeout
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                 if self.permissionTriggerListener != nil {
-                    LogWriter.logNormal("Permission timeout - starting servers anyway")
+                    LogWriter.logNormal("Permission timeout - starting servers anyway", module: .networkAndServer)
                     self.permissionTriggerListener?.cancel()
                     self.permissionTriggerListener = nil
                     completion()
@@ -144,7 +144,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             
         } catch {
-            LogWriter.logEssential("Failed to create permission trigger: \(error)")
+            LogWriter.logEssential("Failed to create permission trigger: \(error)", module: .networkAndServer)
             // Start servers anyway
             completion()
         }
@@ -188,7 +188,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setupTrackMonitor() {
-        LogWriter.logEssential("Starting track monitor with priority-based processing")
+        LogWriter.logEssential("Starting track monitor with priority-based processing", module: .monitoringAndRateSwitching)
 
         trackChangeMonitor.onTrackChange = { [weak self] trackInfo in
             guard let self = self else { return }
@@ -222,20 +222,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Force initial track update
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            LogWriter.logNormal("Triggering initial track check")
+            LogWriter.logNormal("Triggering initial track check", module: .monitoringAndRateSwitching)
             self.trackChangeMonitor.forceTrackUpdate()
         }
     }
     
     // PRIORITY 1: Critical sample rate sync
     private func handleSampleRateSync(for trackInfo: TrackChangeMonitor.TrackInfo) {
-        LogWriter.logEssential("🚨 PRIORITY: Starting immediate sample rate sync")
+        LogWriter.logEssential("🚨 PRIORITY: Starting immediate sample rate sync", module: .monitoringAndRateSwitching)
         
         // Timeout for Phase 2 in case sample rate detection hangs
         var phase2Completed = false
         DispatchQueue.global().asyncAfter(deadline: .now() + 10.0) { [weak self] in
             if !phase2Completed {
-                LogWriter.logEssential("⏰ PHASE 2 TIMEOUT: Sample rate detection took >10s, sending fallback")
+                LogWriter.logEssential("⏰ PHASE 2 TIMEOUT: Sample rate detection took >10s, sending fallback", module: .monitoringAndRateSwitching)
                 self?.sendFallbackAudioConfig()
             }
         }
@@ -246,7 +246,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self = self else { return }
                 
                 phase2Completed = true
-                LogWriter.logEssential("🎚️ PHASE 2: Sample rate detection completed: \(rate) Hz")
+                LogWriter.logEssential("🎚️ PHASE 2: Sample rate detection completed: \(rate) Hz", module: .monitoringAndRateSwitching)
                 
                 // Handle sample rate detection result
                 if rate > 0 {
@@ -268,11 +268,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         }
                     } else {
-                        LogWriter.logNormal("🔍 Audio output unchanged (\(rate) Hz)")
+                        LogWriter.logNormal("🔍 Audio output unchanged (\(rate) Hz)", module: .monitoringAndRateSwitching)
                     }
                     
                     // 🎚️ PHASE 2: ALWAYS update remote clients with detected sample rate
-                    LogWriter.logEssential("🎚️ PHASE 2: Updating remote clients with \(String(format: "%.1f", rate / 1000.0)) kHz...")
+                    LogWriter.logEssential("🎚️ PHASE 2: Updating remote clients with \(String(format: "%.1f", rate / 1000.0)) kHz...", module: .remoteUpdates)
                     
                     let deviceName = AudioManager.getOutputDeviceName() ?? "Unknown"
                     
@@ -288,10 +288,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         deviceName: deviceName
                     )
                     
-                    LogWriter.logEssential("🎚️ ✅ PHASE 2 COMPLETE: Remote clients updated to \(String(format: "%.1f", rate / 1000.0)) kHz")
+                    LogWriter.logEssential("🎚️ ✅ PHASE 2 COMPLETE: Remote clients updated to \(String(format: "%.1f", rate / 1000.0)) kHz", module: .remoteUpdates)
                     
                 } else {
-                    LogWriter.logEssential("❌ PHASE 2 FAILED: Sample rate detection failed (rate: \(rate))")
+                    LogWriter.logEssential("❌ PHASE 2 FAILED: Sample rate detection failed (rate: \(rate))", module: .monitoringAndRateSwitching)
                     self.sendFallbackAudioConfig()
                 }
             }
@@ -299,7 +299,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func sendFallbackAudioConfig() {
-        LogWriter.logEssential("🔄 FALLBACK: Sending current rate \(String(format: "%.1f", currentSampleRate / 1000.0)) kHz to remote clients")
+        LogWriter.logEssential("🔄 FALLBACK: Sending current rate \(String(format: "%.1f", currentSampleRate / 1000.0)) kHz to remote clients", module: .remoteUpdates)
         
         let deviceName = AudioManager.getOutputDeviceName() ?? "Unknown"
         
@@ -315,18 +315,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             deviceName: deviceName
         )
         
-        LogWriter.logEssential("🔄 FALLBACK COMPLETE: Remote clients notified of current rate")
+        LogWriter.logEssential("🔄 FALLBACK COMPLETE: Remote clients notified of current rate", module: .remoteUpdates)
     }
     
     // PRIORITY 2 & 3: Full track info processing (PHASE 1)
     private func handleFullTrackUpdate(for trackInfo: TrackChangeMonitor.TrackInfo) {
-        LogWriter.logEssential("📱 PHASE 1: Sending immediate track info to remote clients")
+        LogWriter.logEssential("📱 PHASE 1: Sending immediate track info to remote clients", module: .remoteUpdates)
         
         // Convert artwork to base64 if available
         var artworkBase64: String? = nil
         if let artworkData = trackInfo.artworkData {
             artworkBase64 = artworkData.base64EncodedString()
-            LogWriter.logNormal("Artwork available (\(artworkData.count) bytes)")
+            LogWriter.logNormal("Artwork available (\(artworkData.count) bytes)", module: .remoteUpdates)
         }
 
         // 📱 PHASE 1: Send track info immediately (excellent UX)
@@ -351,9 +351,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Start progress tracking for new track
         webSocketServer.startProgressTracking()
         
-        LogWriter.logEssential("📱 ✅ PHASE 1 COMPLETE: Track info sent to remote clients")
-        LogWriter.logNormal("🖼️ Artwork will be updated in Phase 1.5 when ready...")
-        LogWriter.logNormal("🔄 Audio config will be updated in Phase 2 after sample rate detection...")
+        LogWriter.logEssential("📱 ✅ PHASE 1 COMPLETE: Track info sent to remote clients", module: .remoteUpdates)
+        LogWriter.logNormal("🖼️ Artwork will be updated in Phase 1.5 when ready...", module: .remoteUpdates)
+        LogWriter.logNormal("🔄 Audio config will be updated in Phase 2 after sample rate detection...", module: .remoteUpdates)
         
         // PRIORITY 4: Playlist updates (lowest priority)
         if FeatureToggleManager.isEnabled(.playlistManagement) {
@@ -365,13 +365,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // Handle artwork update without full track processing
     private func handleArtworkUpdate(for trackInfo: TrackChangeMonitor.TrackInfo) {
-        LogWriter.logEssential("🖼️ ARTWORK UPDATE: Adding artwork to existing track")
+        LogWriter.logEssential("🖼️ ARTWORK UPDATE: Adding artwork to existing track", module: .remoteUpdates)
         
         // Convert artwork to base64
         var artworkBase64: String? = nil
         if let artworkData = trackInfo.artworkData {
             artworkBase64 = artworkData.base64EncodedString()
-            LogWriter.logNormal("🖼️ Artwork updated (\(artworkData.count) bytes)")
+            LogWriter.logNormal("🖼️ Artwork updated (\(artworkData.count) bytes)", module: .remoteUpdates)
         }
 
         // Update HTTP server with artwork (keep existing track info)
@@ -394,7 +394,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             artworkBase64: artworkBase64
         )
         
-        LogWriter.logEssential("🖼️ ✅ ARTWORK UPDATE COMPLETE: Remote clients updated with artwork")
+        LogWriter.logEssential("🖼️ ✅ ARTWORK UPDATE COMPLETE: Remote clients updated with artwork", module: .remoteUpdates)
     }
 
     func updateMenu() {
@@ -428,7 +428,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         consoleItem.target = self
         menu.addItem(consoleItem)
         menu.addItem(NSMenuItem.separator())
-
+        // Logging Modules submenu
+        let loggingModulesMenu = NSMenu()
+        let everythingTitle = LogWriter.logEverything ? "✅ Everything" : "🚫 Everything"
+        let everythingItem = NSMenuItem(title: everythingTitle, action: #selector(toggleLogEverything), keyEquivalent: "")
+        everythingItem.target = self
+        loggingModulesMenu.addItem(everythingItem)
+        loggingModulesMenu.addItem(NSMenuItem.separator())
+        for module in LogModule.filterableModules {
+            let enabled = LogWriter.isModuleIndividuallyEnabled(module)
+            let title = enabled ? "✅ \(module.displayName)" : "◻️ \(module.displayName)"
+            let item = NSMenuItem(title: title, action: #selector(toggleLogModule(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = module
+            // Grey out individual items when Everything is on (they're implied)
+            item.isEnabled = !LogWriter.logEverything
+            loggingModulesMenu.addItem(item)
+        }
+        let loggingSubmenuItem = NSMenuItem(title: "📝 Logging Modules", action: nil, keyEquivalent: "")
+        menu.setSubmenu(loggingModulesMenu, for: loggingSubmenuItem)
+        menu.addItem(loggingSubmenuItem)
+        menu.addItem(NSMenuItem.separator())
         let toggleMenu = NSMenu()
         for feature in FeatureToggle.allCases {
             let state = FeatureToggleManager.isEnabled(feature)
@@ -501,6 +521,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         LogWriter.logNormal("Toggled \(feature.displayName) → \(FeatureToggleManager.isEnabled(feature))")
+        updateMenu()
+    }
+
+    @objc func toggleLogEverything() {
+        LogWriter.logEverything = !LogWriter.logEverything
+        LogWriter.logNormal("Log module filter: Everything = \(LogWriter.logEverything)")
+        updateMenu()
+    }
+
+    @objc func toggleLogModule(_ sender: NSMenuItem) {
+        guard let module = sender.representedObject as? LogModule else { return }
+        LogWriter.toggleModule(module)
+        LogWriter.logNormal("Log module '\(module.displayName)' = \(LogWriter.isModuleIndividuallyEnabled(module))")
         updateMenu()
     }
 

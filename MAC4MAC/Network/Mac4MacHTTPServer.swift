@@ -69,16 +69,16 @@ class Mac4MacHTTPServer {
             }
             
             listener?.start(queue: .global())
-            LogWriter.logEssential("HTTP server started on port \(port)")
+            LogWriter.logEssential("HTTP server started on port \(port)", module: .networkAndServer)
         } catch {
-            LogWriter.logEssential("Failed to start HTTP server: \(error)")
+            LogWriter.logEssential("Failed to start HTTP server: \(error)", module: .networkAndServer)
         }
     }
     
     func stopServer() {
         listener?.cancel()
         listener = nil
-        LogWriter.logEssential("HTTP server stopped")
+        LogWriter.logEssential("HTTP server stopped", module: .networkAndServer)
     }
     
     private func handleConnection(_ connection: NWConnection) {
@@ -91,7 +91,7 @@ class Mac4MacHTTPServer {
             }
             
             if let error = error {
-                LogWriter.logDebug("HTTP connection error: \(error)")
+                LogWriter.logDebug("HTTP connection error: \(error)", module: .networkAndServer)
                 connection.cancel()
                 return
             }
@@ -433,7 +433,7 @@ class Mac4MacHTTPServer {
                 }
             }
         } catch {
-            LogWriter.logDebug("Failed to fetch progress: \(error)")
+            LogWriter.logDebug("Failed to fetch progress: \(error)", module: .remoteUpdates)
         }
         
         // Fallback response
@@ -504,7 +504,7 @@ class Mac4MacHTTPServer {
             return
         }
         
-        LogWriter.logNormal("HTTP remote command: \(command)")
+        LogWriter.logNormal("HTTP remote command: \(command)", module: .remoteUpdates)
         
         let result = executeControlCommand(command: command, parameters: json)
         
@@ -696,7 +696,7 @@ class Mac4MacHTTPServer {
             artworkBase64: artworkBase64
         )
         
-        LogWriter.logDebug("HTTP server updated track: \(trackName) by \(artist)")
+        LogWriter.logDebug("HTTP server updated track: \(trackName) by \(artist)", module: .remoteUpdates)
     }
     
     /// Update audio configuration - call this from AudioManager
@@ -713,7 +713,7 @@ class Mac4MacHTTPServer {
             artworkBase64: currentTrackData.artworkBase64 // Keep existing artwork
         )
         
-        LogWriter.logDebug("HTTP server updated audio config: \(String(format: "%.1f", sampleRate / 1000.0)) kHz")
+        LogWriter.logDebug("HTTP server updated audio config: \(String(format: "%.1f", sampleRate / 1000.0)) kHz", module: .remoteUpdates)
     }
     
     /// Update only the playing state - useful for play/pause detection

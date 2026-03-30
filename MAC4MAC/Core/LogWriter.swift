@@ -1,5 +1,33 @@
 import Foundation
 
+// MARK: - Log Module
+
+/// Identifies which functional area a log message belongs to.
+/// Used to selectively enable/disable logging per module from the menu bar.
+enum LogModule: String, CaseIterable {
+    case monitoringAndRateSwitching
+    case remoteUpdates
+    case cachingAndCleanup
+    case networkAndServer
+    /// General / startup messages — always logged, not user-filterable.
+    case general
+
+    var displayName: String {
+        switch self {
+        case .monitoringAndRateSwitching: return "Monitoring & Rate Switching"
+        case .remoteUpdates:              return "Remote Updates"
+        case .cachingAndCleanup:          return "Caching & Cleanup"
+        case .networkAndServer:           return "Network & Server"
+        case .general:                    return "General"
+        }
+    }
+
+    /// Modules the user can toggle on/off in the menu.
+    static var filterableModules: [LogModule] {
+        return [.monitoringAndRateSwitching, .remoteUpdates, .cachingAndCleanup, .networkAndServer]
+    }
+}
+
 struct LogWriter {
     enum LogLevel: Int, CaseIterable {
         case essential = 0  // Only critical logs (track changes, sample rate, errors)
@@ -34,10 +62,48 @@ struct LogWriter {
     
     // Maximum number of log files to keep (default: 30 days)
     static var maxLogFiles: Int = 30
-    
-    static func log(_ message: String, level: LogLevel = .normal) {
+
+    // MARK: - Module Filter
+
+    private static let moduleFilterPrefix = "MAC4MAC.LogModule."
+    private static let logEverythingKey   = "MAC4MAC.LogModule.everything"
+
+    /// When true all modules are logged (overrides per-module toggles).
+    static var logEverything: Bool {
+        get {
+            let stored = UserDefaults.standard.object(forKey: logEverythingKey)
+            return stored == nil ? true : UserDefaults.standard.bool(forKey: logEverythingKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: logEverythingKey) }
+    }
+
+    /// Returns true if a specific filterable module is individually enabled.
+    static func isModuleIndividuallyEnabled(_ module: LogModule) -> Bool {
+        let key = moduleFilterPrefix + module.rawValue
+        let stored = UserDefaults.standard.object(forKey: key)
+        return stored == nil ? false : UserDefaults.standard.bool(forKey: key)
+    }
+
+    static func setModule(_ module: LogModule, enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: moduleFilterPrefix + module.rawValue)
+    }
+
+    static func toggleModule(_ module: LogModule) {
+        setModule(module, enabled: !isModuleIndividuallyEnabled(module))
+    }
+
+    /// Determines whether a message tagged with the given module should be written.
+    private static func shouldLog(module: LogModule) -> Bool {
+        if module == .general { return true }  // general is never suppressed
+        if logEverything { return true }
+        return isModuleIndividuallyEnabled(module)
+    }
+
+    static func log(_ message: String, level: LogLevel = .normal, module: LogModule = .general) {
         // Only log if message level is at or above current level
         guard level.rawValue <= currentLogLevel.rawValue else { return }
+        // Only log if the module is enabled
+        guard shouldLog(module: module) else { return }
         
         // Ensure log directory exists
         createLogDirectoryIfNeeded()
@@ -69,16 +135,16 @@ struct LogWriter {
     }
     
     // Convenience methods for different log levels
-    static func logEssential(_ message: String) {
-        log(message, level: .essential)
+    static func logEssential(_ message: String, module: LogModule = .general) {
+        log(message, level: .essential, module: module)
     }
     
-    static func logNormal(_ message: String) {
-        log(message, level: .normal)
+    static func logNormal(_ message: String, module: LogModule = .general) {
+        log(message, level: .normal, module: module)
     }
     
-    static func logDebug(_ message: String) {
-        log(message, level: .debug)
+    static func logDebug(_ message: String, module: LogModule = .general) {
+        log(message, level: .debug, module: module)
     }
     
     // MARK: - Specialized Logging Methods
@@ -96,9 +162,9 @@ struct LogWriter {
         let trackInfo = "🎵 NEW TRACK | \(trackName) - \(artist) | \(album) | \(sampleRateKHz) kHz | \(timeString)"
         
         // Write separator and track info as a special formatted entry
-        logRaw("\n\(separator)")
-        logRaw(trackInfo)
-        logRaw(separator)
+        logRaw("\n\(separator)", module: .monitoringAndRateSwitching)
+        logRaw(trackInfo, module: .monitoringAndRateSwitching)
+        logRaw(separator, module: .monitoringAndRateSwitching)
     }
     
     /// Logs an immediate track change separator with just the track ID
@@ -118,9 +184,9 @@ struct LogWriter {
         sessionStartTime = Date()
         
         // Write separator and track info as a special formatted entry
-        logRaw("\n\(separator)")
-        logRaw(trackInfo)
-        logRaw(separator)
+        logRaw("\n\(separator)", module: .monitoringAndRateSwitching)
+        logRaw(trackInfo, module: .monitoringAndRateSwitching)
+        logRaw(separator, module: .monitoringAndRateSwitching)
     }
     
     // Session tracking for correlation
@@ -128,7 +194,7 @@ struct LogWriter {
     private static var sessionStartTime: Date = Date()
     
     /// Logs with session correlation and timing
-    static func logWithSession(_ message: String, level: LogLevel = .normal, phase: String? = nil, status: String? = nil) {
+    static func logWithSession(_ message: String, level: LogLevel = .normal, module: LogModule = .general, phase: String? = nil, status: String? = nil) {
         let elapsed = String(format: "%.0f", Date().timeIntervalSince(sessionStartTime) * 1000)
         let sessionTag = currentSessionID.isEmpty ? "" : "[\(currentSessionID)]"
         let phaseTag = phase != nil ? "[\(phase!)]" : ""
@@ -136,34 +202,34 @@ struct LogWriter {
         let timingTag = "[\(elapsed)ms]"
         
         let enhancedMessage = "\(sessionTag)\(phaseTag)\(statusTag)\(timingTag) \(message)"
-        log(enhancedMessage, level: level)
+        log(enhancedMessage, level: level, module: module)
     }
     
     /// Logs operation start with timing
-    static func logOperationStart(_ operation: String, phase: String? = nil) {
-        logWithSession("🚀 START: \(operation)", level: .essential, phase: phase, status: "INIT")
+    static func logOperationStart(_ operation: String, phase: String? = nil, module: LogModule = .general) {
+        logWithSession("🚀 START: \(operation)", level: .essential, module: module, phase: phase, status: "INIT")
     }
     
     /// Logs operation success with timing
-    static func logOperationSuccess(_ operation: String, phase: String? = nil, details: String? = nil) {
+    static func logOperationSuccess(_ operation: String, phase: String? = nil, details: String? = nil, module: LogModule = .general) {
         let message = details != nil ? "\(operation) - \(details!)" : operation
-        logWithSession("✅ SUCCESS: \(message)", level: .essential, phase: phase, status: "OK")
+        logWithSession("✅ SUCCESS: \(message)", level: .essential, module: module, phase: phase, status: "OK")
     }
     
     /// Logs operation failure with timing
-    static func logOperationFailure(_ operation: String, phase: String? = nil, error: String) {
-        logWithSession("❌ FAILED: \(operation) - \(error)", level: .essential, phase: phase, status: "ERR")
+    static func logOperationFailure(_ operation: String, phase: String? = nil, error: String, module: LogModule = .general) {
+        logWithSession("❌ FAILED: \(operation) - \(error)", level: .essential, module: module, phase: phase, status: "ERR")
     }
     
     /// Logs operation timeout with timing
-    static func logOperationTimeout(_ operation: String, phase: String? = nil, timeoutMs: Int) {
-        logWithSession("⏰ TIMEOUT: \(operation) after \(timeoutMs)ms", level: .essential, phase: phase, status: "TMO")
+    static func logOperationTimeout(_ operation: String, phase: String? = nil, timeoutMs: Int, module: LogModule = .general) {
+        logWithSession("⏰ TIMEOUT: \(operation) after \(timeoutMs)ms", level: .essential, module: module, phase: phase, status: "TMO")
     }
     
     /// Logs state transition
-    static func logStateChange(from: String, to: String, reason: String? = nil) {
+    static func logStateChange(from: String, to: String, reason: String? = nil, module: LogModule = .general) {
         let reasonText = reason != nil ? " - \(reason!)" : ""
-        logWithSession("🔄 STATE: \(from) → \(to)\(reasonText)", level: .normal, status: "STATE")
+        logWithSession("🔄 STATE: \(from) → \(to)\(reasonText)", level: .normal, module: module, status: "STATE")
     }
     
     /// Logs sample rate changes with directional indicators
@@ -188,11 +254,12 @@ struct LogWriter {
         let status = succeeded ? "✅ SUCCESS" : "❌ FAILED"
         let message = "🎚️ \(indicator) SAMPLE RATE \(direction): \(oldKHz) kHz → \(newKHz) kHz | \(status)"
         
-        logEssential(message)
+        logEssential(message, module: .monitoringAndRateSwitching)
     }
     
     /// Logs raw message without timestamp formatting (for separators)
-    private static func logRaw(_ message: String) {
+    private static func logRaw(_ message: String, module: LogModule = .general) {
+        guard shouldLog(module: module) else { return }
         let logFile = currentLogFile
         let fullMessage = "\(message)\n"
         

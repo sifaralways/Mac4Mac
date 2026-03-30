@@ -33,7 +33,7 @@ class PlaylistManager {
         """
 
         runAppleScript(script)
-        LogWriter.logNormal("Track added to playlist: \(playlistName)")
+        LogWriter.logNormal("Track added to playlist: \(playlistName)", module: .cachingAndCleanup)
     }
 
     /// Helper to run AppleScript code synchronously
@@ -53,10 +53,10 @@ class PlaylistManager {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             if let output = String(data: data, encoding: .utf8), !output.isEmpty {
                 let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-                LogWriter.logDebug("AppleScript output: \(trimmedOutput)")
+                LogWriter.logDebug("AppleScript output: \(trimmedOutput)", module: .cachingAndCleanup)
             }
         } catch {
-            LogWriter.logEssential("AppleScript error: \(error.localizedDescription)")
+            LogWriter.logEssential("AppleScript error: \(error.localizedDescription)", module: .cachingAndCleanup)
         }
     }
 }

@@ -39,7 +39,7 @@ class TrackChangeMonitor {
     var onTrackChange: ((TrackInfo) -> Void)?
 
     func startMonitoring() {
-        LogWriter.logEssential("Track change monitoring started")
+        LogWriter.logEssential("Track change monitoring started", module: .monitoringAndRateSwitching)
         
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             self.checkForTrackChange()
@@ -89,24 +89,24 @@ class TrackChangeMonitor {
             return // Same track, no action needed
         }
         
-        LogWriter.logEssential("Track change detected: \(currentTrackID)")
+        LogWriter.logEssential("Track change detected: \(currentTrackID)", module: .monitoringAndRateSwitching)
         
         // Log immediate track separator for clear visual separation
         LogWriter.logTrackChangeDetected(trackID: currentTrackID)
         
-        LogWriter.logOperationStart("3-Phase Track Processing")
+        LogWriter.logOperationStart("3-Phase Track Processing", module: .monitoringAndRateSwitching)
         self.lastTrackID = currentTrackID
 
         // STEP 2: PRIORITY 1 - Immediate sample rate sync (CRITICAL PATH)
-        LogWriter.logOperationStart("Sample Rate Sync", phase: "P1")
+        LogWriter.logOperationStart("Sample Rate Sync", phase: "P1", module: .monitoringAndRateSwitching)
         self.handleSampleRateSync(for: currentTrackID)
         
         // STEP 3: PRIORITY 2 - Fetch track info (async, for remote app)
-        LogWriter.logOperationStart("Track Info Fetch", phase: "P2")
+        LogWriter.logOperationStart("Track Info Fetch", phase: "P2", module: .monitoringAndRateSwitching)
         self.handleTrackInfoFetch(for: currentTrackID)
         
         // STEP 4: PRIORITY 3 - Fetch artwork (async, heavy operation)
-        LogWriter.logOperationStart("Artwork Fetch", phase: "P3")
+        LogWriter.logOperationStart("Artwork Fetch", phase: "P3", module: .monitoringAndRateSwitching)
         self.handleArtworkFetch(for: currentTrackID)
     }
     
@@ -143,11 +143,11 @@ class TrackChangeMonitor {
     
     // PRIORITY 2: Track info for remote app (async)
     private func handleTrackInfoFetch(for trackID: String) {
-        LogWriter.logWithSession("Starting track info fetch", level: .normal, phase: "P2")
+        LogWriter.logWithSession("Starting track info fetch", level: .normal, module: .monitoringAndRateSwitching, phase: "P2")
         
         // Check cache first
         if let cachedInfo = trackInfoCache[trackID], !cachedInfo.isExpired {
-            LogWriter.logWithSession("Using cached track info", level: .debug, phase: "P2", status: "CACHE")
+            LogWriter.logWithSession("Using cached track info", level: .debug, module: .cachingAndCleanup, phase: "P2", status: "CACHE")
             updateWithCachedInfo(trackID: trackID, cachedInfo: cachedInfo)
             return
         }
@@ -159,11 +159,11 @@ class TrackChangeMonitor {
     
     // PRIORITY 3: Artwork fetch (async, lowest priority)
     private func handleArtworkFetch(for trackID: String) {
-        LogWriter.logWithSession("Starting artwork fetch", level: .normal, phase: "P3")
+        LogWriter.logWithSession("Starting artwork fetch", level: .normal, module: .monitoringAndRateSwitching, phase: "P3")
         
         // Check artwork cache first
         if let cachedArtwork = artworkCache[trackID] {
-            LogWriter.logWithSession("Using cached artwork (\(cachedArtwork.count) bytes)", level: .debug, phase: "P3", status: "CACHE")
+            LogWriter.logWithSession("Using cached artwork (\(cachedArtwork.count) bytes)", level: .debug, module: .cachingAndCleanup, phase: "P3", status: "CACHE")
             // Mark artwork as ready for this track
             if trackStates[trackID] == nil {
                 trackStates[trackID] = TrackState()
@@ -217,13 +217,13 @@ class TrackChangeMonitor {
         guard let output = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
               !output.isEmpty && !output.hasPrefix("ERROR") && output != "NOT_RUNNING" && output != "NO_TRACK" && output != "TRACK_CHANGED" else {
-            LogWriter.logDebug("Failed to fetch track info or track changed during fetch")
+            LogWriter.logDebug("Failed to fetch track info or track changed during fetch", module: .monitoringAndRateSwitching)
             return
         }
 
         let components = output.components(separatedBy: "||")
         guard components.count == 3 else {
-            LogWriter.logDebug("Invalid track info format")
+            LogWriter.logDebug("Invalid track info format", module: .monitoringAndRateSwitching)
             return
         }
 
@@ -250,8 +250,8 @@ class TrackChangeMonitor {
         }
         trackStates[trackID]?.hasTrackInfo = true
         
-        LogWriter.logNormal("Track info fetched: \(finalName) by \(finalArtist)")
-        LogWriter.logNormal("📊 PARALLEL: Track info fetch completed")
+        LogWriter.logNormal("Track info fetched: \(finalName) by \(finalArtist)", module: .monitoringAndRateSwitching)
+        LogWriter.logNormal("📊 PARALLEL: Track info fetch completed", module: .monitoringAndRateSwitching)
         
         // Check if we can send full update
         DispatchQueue.main.async { [weak self] in
@@ -317,7 +317,7 @@ class TrackChangeMonitor {
                         
                         // Verify it's valid image data
                         guard artworkData.count > 8 else {
-                            LogWriter.logDebug("Artwork data too small")
+                            LogWriter.logDebug("Artwork data too small", module: .monitoringAndRateSwitching)
                             try? FileManager.default.removeItem(at: tempFile)
                             return
                         }
@@ -331,8 +331,8 @@ class TrackChangeMonitor {
                         }
                         trackStates[trackID]?.hasArtwork = true
                         
-                        LogWriter.logNormal("Artwork cached for track (\(artworkData.count) bytes)")
-                        LogWriter.logNormal("🖼️ PARALLEL: Artwork fetch completed")
+                        LogWriter.logNormal("Artwork cached for track (\(artworkData.count) bytes)", module: .cachingAndCleanup)
+                        LogWriter.logNormal("🖼️ PARALLEL: Artwork fetch completed", module: .monitoringAndRateSwitching)
                         
                         // Clean up temp file
                         try? FileManager.default.removeItem(at: tempFile)
@@ -342,30 +342,30 @@ class TrackChangeMonitor {
                             self?.sendArtworkUpdate(for: trackID, artworkData: artworkData)
                         }
                     } catch {
-                        LogWriter.logDebug("Failed to read artwork file: \(error.localizedDescription)")
+                        LogWriter.logDebug("Failed to read artwork file: \(error.localizedDescription)", module: .monitoringAndRateSwitching)
                         try? FileManager.default.removeItem(at: tempFile)
                     }
                 } else {
-                    LogWriter.logDebug("No artwork available: \(output)")
+                    LogWriter.logDebug("No artwork available: \(output)", module: .monitoringAndRateSwitching)
                     // Mark artwork as "ready" (even though it's nil) so full update can proceed
                     if trackStates[trackID] == nil {
                         trackStates[trackID] = TrackState()
                     }
                     trackStates[trackID]?.hasArtwork = true
                     
-                    LogWriter.logDebug("🖼️ No artwork available for this track")
+                    LogWriter.logDebug("🖼️ No artwork available for this track", module: .monitoringAndRateSwitching)
                     // Don't send artwork update if there's no artwork
                 }
             }
         } catch {
-            LogWriter.logDebug("Failed to execute artwork script: \(error.localizedDescription)")
+            LogWriter.logDebug("Failed to execute artwork script: \(error.localizedDescription)", module: .monitoringAndRateSwitching)
             // Mark artwork as "ready" (failed) so full update can proceed
             if trackStates[trackID] == nil {
                 trackStates[trackID] = TrackState()
             }
             trackStates[trackID]?.hasArtwork = true
             
-            LogWriter.logDebug("🖼️ Artwork fetch failed for this track")
+            LogWriter.logDebug("🖼️ Artwork fetch failed for this track", module: .monitoringAndRateSwitching)
             // Don't send artwork update if artwork fetch failed
         }
     }
@@ -389,7 +389,7 @@ class TrackChangeMonitor {
                 artworkData: artworkData
             )
             
-            LogWriter.logEssential("📱 PHASE 1 READY: \(cachedInfo.name) by \(cachedInfo.artist)")
+            LogWriter.logEssential("📱 PHASE 1 READY: \(cachedInfo.name) by \(cachedInfo.artist)", module: .monitoringAndRateSwitching)
             onTrackChange?(trackInfo)
         }
     }
@@ -397,13 +397,13 @@ class TrackChangeMonitor {
     // Send artwork update without triggering full track processing
     private func sendArtworkUpdate(for trackID: String, artworkData: Data) {
         guard let cachedInfo = trackInfoCache[trackID] else {
-            LogWriter.logDebug("No track info available for artwork update")
+            LogWriter.logDebug("No track info available for artwork update", module: .monitoringAndRateSwitching)
             return
         }
         
         // Only send artwork update if we already sent the initial track info
         guard let state = trackStates[trackID], state.hasSentFullCallback else {
-            LogWriter.logDebug("Track info not sent yet, artwork will be included in full update")
+            LogWriter.logDebug("Track info not sent yet, artwork will be included in full update", module: .monitoringAndRateSwitching)
             return
         }
         
@@ -415,7 +415,7 @@ class TrackChangeMonitor {
             artworkData: artworkData
         )
         
-        LogWriter.logEssential("🖼️ ARTWORK UPDATE: Sending artwork for \(cachedInfo.name)")
+        LogWriter.logEssential("🖼️ ARTWORK UPDATE: Sending artwork for \(cachedInfo.name)", module: .remoteUpdates)
         onTrackChange?(trackInfo)
     }
     
@@ -442,13 +442,13 @@ class TrackChangeMonitor {
             artworkData: artworkData
         )
         
-        LogWriter.logEssential("📱 PHASE 1 CACHED: \(cachedInfo.name) by \(cachedInfo.artist)")
+        LogWriter.logEssential("📱 PHASE 1 CACHED: \(cachedInfo.name) by \(cachedInfo.artist)", module: .monitoringAndRateSwitching)
         DispatchQueue.main.async { [weak self] in
             self?.onTrackChange?(trackInfo)
         }
     }
     func stopMonitoring() {
-        LogWriter.logEssential("Track change monitoring stopped")
+        LogWriter.logEssential("Track change monitoring stopped", module: .monitoringAndRateSwitching)
         timer?.invalidate()
         timer = nil
         artworkCache.removeAll()
@@ -460,11 +460,11 @@ class TrackChangeMonitor {
         artworkCache.removeAll()
         trackInfoCache.removeAll()
         trackStates.removeAll()
-        LogWriter.logNormal("Track and artwork caches cleared")
+        LogWriter.logNormal("Track and artwork caches cleared", module: .cachingAndCleanup)
     }
     
     func forceTrackUpdate() {
-        LogWriter.logNormal("Forcing track update check")
+        LogWriter.logNormal("Forcing track update check", module: .monitoringAndRateSwitching)
         lastTrackID = nil
         trackStates.removeAll()
     }

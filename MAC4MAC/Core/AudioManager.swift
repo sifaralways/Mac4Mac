@@ -5,11 +5,11 @@ class AudioManager {
     static func setOutputSampleRate(to sampleRate: Double) -> Bool {
         // Don't attempt to change if sampleRate is 0 (indicates detection failure)
         guard sampleRate > 0 else {
-            LogWriter.logNormal("Sample rate detection failed - keeping current rate")
+            LogWriter.logNormal("Sample rate detection failed - keeping current rate", module: .monitoringAndRateSwitching)
             return false
         }
         
-        LogWriter.logEssential("🚨 CRITICAL: Attempting to set sample rate to \(sampleRate) Hz")
+        LogWriter.logEssential("🚨 CRITICAL: Attempting to set sample rate to \(sampleRate) Hz", module: .monitoringAndRateSwitching)
 
         var deviceID = AudioDeviceID(0)
         var size = UInt32(MemoryLayout.size(ofValue: deviceID))
@@ -26,11 +26,11 @@ class AudioManager {
                                                 &deviceID)
 
         guard status == noErr else {
-            LogWriter.logEssential("Failed to get output device (status: \(status))")
+            LogWriter.logEssential("Failed to get output device (status: \(status))", module: .monitoringAndRateSwitching)
             return false
         }
 
-        LogWriter.logDebug("Default output device ID: \(deviceID)")
+        LogWriter.logDebug("Default output device ID: \(deviceID)", module: .monitoringAndRateSwitching)
 
         var rate = sampleRate
         let rateSize = UInt32(MemoryLayout.size(ofValue: rate))
@@ -47,10 +47,10 @@ class AudioManager {
                                                   &rate)
 
         if setStatus == noErr {
-            LogWriter.logDebug("Sample rate successfully changed to \(rate) Hz")
+            LogWriter.logDebug("Sample rate successfully changed to \(rate) Hz", module: .monitoringAndRateSwitching)
             return true
         } else {
-            LogWriter.logDebug("Failed to change sample rate (status code: \(setStatus))")
+            LogWriter.logDebug("Failed to change sample rate (status code: \(setStatus))", module: .monitoringAndRateSwitching)
             return false
         }
     }

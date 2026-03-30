@@ -58,7 +58,7 @@ class Mac4MacWebSocketServer {
                 }
             }
             
-            LogWriter.logNormal("Progress tracking started with \(updateInterval)s interval")
+            LogWriter.logNormal("Progress tracking started with \(updateInterval)s interval", module: .remoteUpdates)
         }
         
         func stopTracking() {
@@ -148,7 +148,7 @@ class Mac4MacWebSocketServer {
         DispatchQueue.global().async {
             wsConnection.connection.cancel()
         }
-        LogWriter.logDebug("Removed WebSocket connection. Total: \(connections.count)")
+        LogWriter.logDebug("Removed WebSocket connection. Total: \(connections.count)", module: .networkAndServer)
     }
     
     func startServer() {
@@ -163,9 +163,9 @@ class Mac4MacWebSocketServer {
             
             listener?.start(queue: .global())
             Mac4MacWebSocketServer.shared = self
-            LogWriter.logEssential("WebSocket server started on port \(port)")
+            LogWriter.logEssential("WebSocket server started on port \(port)", module: .networkAndServer)
         } catch {
-            LogWriter.logEssential("Failed to start WebSocket server: \(error)")
+            LogWriter.logEssential("Failed to start WebSocket server: \(error)", module: .networkAndServer)
         }
     }
     
@@ -174,7 +174,7 @@ class Mac4MacWebSocketServer {
         addConnection(wsConnection)
         connection.start(queue: .global())
         
-        LogWriter.logDebug("New WebSocket connection. Total: \(connections.count)")
+        LogWriter.logDebug("New WebSocket connection. Total: \(connections.count)", module: .networkAndServer)
         
         // Start receiving data for WebSocket handshake
         receiveData(from: wsConnection)
@@ -187,7 +187,7 @@ class Mac4MacWebSocketServer {
             guard let self = self, let wsConnection = wsConnection else { return }
             
             if let error = error {
-                LogWriter.logDebug("WebSocket receive error: \(error)")
+                LogWriter.logDebug("WebSocket receive error: \(error)", module: .networkAndServer)
                 self.removeConnection(wsConnection)
                 return
             }
@@ -257,11 +257,11 @@ class Mac4MacWebSocketServer {
                 guard let self = self, let wsConnection = wsConnection else { return }
                 
                 if let error = error {
-                    LogWriter.logDebug("Failed to send WebSocket handshake: \(error)")
+                    LogWriter.logDebug("Failed to send WebSocket handshake: \(error)", module: .networkAndServer)
                     self.removeConnection(wsConnection)
                 } else {
                     wsConnection.isWebSocketUpgraded = true
-                    LogWriter.logDebug("WebSocket connection upgraded successfully")
+                    LogWriter.logDebug("WebSocket connection upgraded successfully", module: .networkAndServer)
                     
                     // Send initial messages
                     DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { [weak self, weak wsConnection] in
@@ -433,7 +433,7 @@ class Mac4MacWebSocketServer {
     private func handleRemoteCommand(_ data: [String: Any]) {
         guard let command = data["command"] as? String else { return }
         
-        LogWriter.logNormal("Remote command: \(command)")
+        LogWriter.logNormal("Remote command: \(command)", module: .remoteUpdates)
         
         switch command {
         case "play_pause":
@@ -490,7 +490,7 @@ class Mac4MacWebSocketServer {
             try task.run()
             task.waitUntilExit()
         } catch {
-            LogWriter.logEssential("Failed to execute AppleScript: \(error)")
+            LogWriter.logEssential("Failed to execute AppleScript: \(error)", module: .remoteUpdates)
         }
     }
     
@@ -566,7 +566,7 @@ class Mac4MacWebSocketServer {
                     }
                 }
             } catch {
-                LogWriter.logDebug("Failed to fetch progress: \(error)")
+                LogWriter.logDebug("Failed to fetch progress: \(error)", module: .remoteUpdates)
             }
         }
     }
@@ -625,7 +625,7 @@ class Mac4MacWebSocketServer {
             guard let self = self, let wsConnection = wsConnection else { return }
             
             if let error = error {
-                LogWriter.logDebug("WebSocket send failed: \(error)")
+                LogWriter.logDebug("WebSocket send failed: \(error)", module: .networkAndServer)
                 self.removeConnection(wsConnection)
             }
         })
@@ -692,6 +692,6 @@ class Mac4MacWebSocketServer {
         listener?.cancel()
         listener = nil
         Mac4MacWebSocketServer.shared = nil
-        LogWriter.logEssential("WebSocket server stopped")
+        LogWriter.logEssential("WebSocket server stopped", module: .networkAndServer)
     }
 }

@@ -27,7 +27,7 @@ class LogMonitor {
         let handle = pipe.fileHandleForReading
 
         task.terminationHandler = { _ in
-            LogWriter.logEssential("⚠️ Log stream terminated unexpectedly")
+            LogWriter.logEssential("⚠️ Log stream terminated unexpectedly", module: .monitoringAndRateSwitching)
             isMonitoring = false
         }
 
@@ -39,9 +39,9 @@ class LogMonitor {
         do {
             try task.run()
             logStreamTask = task
-            LogWriter.logEssential("📡 Log stream started for sample rate monitoring")
+            LogWriter.logEssential("📡 Log stream started for sample rate monitoring", module: .monitoringAndRateSwitching)
         } catch {
-            LogWriter.logEssential("❌ Failed to start log stream: \(error)")
+            LogWriter.logEssential("❌ Failed to start log stream: \(error)", module: .monitoringAndRateSwitching)
         }
     }
     //using stream now
@@ -69,7 +69,7 @@ class LogMonitor {
 
         processingQueue.async {
             if abs(rateHz - latestSampleRateHz) >= 1 {
-                LogWriter.logEssential("🎚️ Stream detected new sample rate: \(rateHz) Hz (\(quality), \(bitDepth))")
+                LogWriter.logEssential("🎚️ Stream detected new sample rate: \(rateHz) Hz (\(quality), \(bitDepth))", module: .monitoringAndRateSwitching)
             }
             latestSampleRateHz = rateHz
         }
@@ -84,7 +84,7 @@ class LogMonitor {
         processingQueue.asyncAfter(deadline: .now() + 0.1) {
             // Fallback if no sample rate detected yet
             if latestSampleRateHz == 0 {
-                LogWriter.logNormal("⚠️ No sample rate detected yet via log stream — returning 0")
+                LogWriter.logNormal("⚠️ No sample rate detected yet via log stream — returning 0", module: .monitoringAndRateSwitching)
             }
             completion(latestSampleRateHz, trackName)
         }
