@@ -6,6 +6,8 @@ MAC4MAC is a macOS menu bar app that monitors Apple Music track changes and auto
 
 The project solves the gap where macOS does not automatically keep Audio MIDI sample rate in sync with Apple Music content. Primary users are audiophiles and Apple Music listeners who want hands-off sample-rate matching and optional remote control from another device.
 
+File repomix-output.xml contains all the files in the repository combined into one.
+
 ## Tech Stack
 
 - Language: Swift (project build setting `SWIFT_VERSION = 5.0`)
