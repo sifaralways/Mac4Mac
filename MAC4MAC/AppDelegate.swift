@@ -242,7 +242,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Start sample rate detection immediately in background
         DispatchQueue.global().async { [weak self] in
-            LogMonitor.fetchLatestSampleRate(forTrack: trackInfo.name) { [weak self] rate, _ in
+            LogMonitor.fetchLatestSampleRate(forTrack: trackInfo.name) { [weak self] rate, _, audioFormat in
                 guard let self = self else { return }
                 
                 phase2Completed = true
@@ -279,13 +279,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.httpServer.updateAudioConfig(
                         sampleRate: rate,
                         bitDepth: 32,
-                        deviceName: deviceName
+                        deviceName: deviceName,
+                        audioFormat: audioFormat
                     )
                     
                     self.webSocketServer.broadcastAudioConfigUpdate(
                         sampleRate: rate,
                         bitDepth: 32,
-                        deviceName: deviceName
+                        deviceName: deviceName,
+                        audioFormat: audioFormat
                     )
                     
                     LogWriter.logEssential("🎚️ ✅ PHASE 2 COMPLETE: Remote clients updated to \(String(format: "%.1f", rate / 1000.0)) kHz", module: .remoteUpdates)

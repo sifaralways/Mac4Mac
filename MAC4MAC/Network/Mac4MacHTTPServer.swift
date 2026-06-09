@@ -12,10 +12,11 @@ class Mac4MacHTTPServer {
         album: "Unknown Album",
         persistentID: nil,
         sampleRate: 44100.0,
-        bitDepth: 32,
+        bitDepth: 24,
         isPlaying: false,
         audioDevice: "Unknown Device",
-        artworkBase64: nil
+        artworkBase64: nil,
+        audioFormat: "LossLess"
     )
     
     struct TrackData: Codable {
@@ -29,6 +30,7 @@ class Mac4MacHTTPServer {
         let audioDevice: String
         let artworkBase64: String?
         let timestamp: Date
+        let audioFormat: String
         
         // Computed properties for convenience
         var sampleRateDisplay: String {
@@ -44,7 +46,7 @@ class Mac4MacHTTPServer {
         }
         
         init(trackName: String, artist: String, album: String, persistentID: String?,
-             sampleRate: Double, bitDepth: Int, isPlaying: Bool, audioDevice: String, artworkBase64: String?) {
+             sampleRate: Double, bitDepth: Int, isPlaying: Bool, audioDevice: String, artworkBase64: String?, audioFormat: String) {
             self.trackName = trackName
             self.artist = artist
             self.album = album
@@ -55,6 +57,7 @@ class Mac4MacHTTPServer {
             self.audioDevice = audioDevice
             self.artworkBase64 = artworkBase64
             self.timestamp = Date()
+            self.audioFormat = audioFormat
         }
     }
     
@@ -203,6 +206,7 @@ class Mac4MacHTTPServer {
     private func sendAudioInfo(connection: NWConnection) {
         let audioInfo = [
             "currentDevice": currentTrackData.audioDevice,
+            "audioFormat": currentTrackData.audioFormat,
             "sampleRate": currentTrackData.sampleRate,
             "bitDepth": currentTrackData.bitDepth,
             "sampleRateDisplay": currentTrackData.sampleRateDisplay,
@@ -693,14 +697,22 @@ class Mac4MacHTTPServer {
             bitDepth: currentTrackData.bitDepth,     // Keep existing bit depth
             isPlaying: isPlaying,
             audioDevice: currentTrackData.audioDevice, // Keep existing device
-            artworkBase64: artworkBase64
+            artworkBase64: artworkBase64,
+            audioFormat: currentTrackData.audioFormat
         )
         
         LogWriter.logDebug("HTTP server updated track: \(trackName) by \(artist)", module: .remoteUpdates)
     }
     
-    /// Update audio configuration - call this from AudioManager
-    func updateAudioConfig(sampleRate: Double, bitDepth: Int = 32, deviceName: String) {
+    /// Update audio configuration - call this from AudioManager/LogMonitor pipeline
+    func updateAudioConfig(sampleRate: Double, bitDepth: Int = 32, deviceName: String, audioFormat: String? = nil) {
+        let resolvedAudioFormat: String
+        if let audioFormat, !audioFormat.isEmpty {
+            resolvedAudioFormat = audioFormat
+        } else {
+            resolvedAudioFormat = currentTrackData.audioFormat
+        }
+
         currentTrackData = TrackData(
             trackName: currentTrackData.trackName,
             artist: currentTrackData.artist,
@@ -710,7 +722,8 @@ class Mac4MacHTTPServer {
             bitDepth: bitDepth,
             isPlaying: currentTrackData.isPlaying,
             audioDevice: deviceName,
-            artworkBase64: currentTrackData.artworkBase64 // Keep existing artwork
+            artworkBase64: currentTrackData.artworkBase64, // Keep existing artwork
+            audioFormat: resolvedAudioFormat
         )
         
         LogWriter.logDebug("HTTP server updated audio config: \(String(format: "%.1f", sampleRate / 1000.0)) kHz", module: .remoteUpdates)
@@ -727,7 +740,8 @@ class Mac4MacHTTPServer {
             bitDepth: currentTrackData.bitDepth,
             isPlaying: isPlaying,
             audioDevice: currentTrackData.audioDevice,
-            artworkBase64: currentTrackData.artworkBase64 // Keep existing artwork
+            artworkBase64: currentTrackData.artworkBase64 ,// Keep existing artwork
+            audioFormat: currentTrackData.audioFormat
         )
     }
     

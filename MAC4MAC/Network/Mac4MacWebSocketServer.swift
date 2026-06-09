@@ -650,16 +650,22 @@ class Mac4MacWebSocketServer {
         broadcast(message)
     }
     
-    func broadcastAudioConfigUpdate(sampleRate: Double, bitDepth: Int, deviceName: String) {
-        let message = WebSocketMessage(type: .audioConfigUpdate, data: [
+    func broadcastAudioConfigUpdate(sampleRate: Double, bitDepth: Int, deviceName: String, audioFormat: String? = nil) {
+        var payload: [String: Any] = [
             "sampleRate": sampleRate,
             "bitDepth": bitDepth,
             "deviceName": deviceName,
             "sampleRateDisplay": String(format: "%.1f kHz", sampleRate / 1000.0),
             "bitDepthDisplay": "\(bitDepth)-bit"
-        ])
+        ]
+
+        if let audioFormat, !audioFormat.isEmpty {
+            payload["audioFormat"] = audioFormat
+        }
+
+        let enrichedMessage = WebSocketMessage(type: .audioConfigUpdate, data: payload)
         
-        broadcast(message)
+        broadcast(enrichedMessage)
     }
     
     func broadcastPlayStateUpdate(isPlaying: Bool) {

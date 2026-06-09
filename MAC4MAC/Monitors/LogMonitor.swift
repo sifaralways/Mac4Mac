@@ -1,8 +1,11 @@
 import Foundation
 
 class LogMonitor {
+
     private static var latestSampleRateHz: Double = 0
     private static var latestTrackName: String = ""
+    private static var latestAudioFormat: String = ""
+
     private static var logStreamTask: Process?
     private static var isMonitoring = false
     private static let processingQueue = DispatchQueue(label: "LogMonitorQueue")
@@ -13,7 +16,7 @@ class LogMonitor {
         isMonitoring = true
 
         let script = """
-        log stream --style syslog --predicate 'process == "Music"' --info
+        log stream --style syslog --predicate 'process == "Music" AND composedMessage CONTAINS "Creating AudioQueue with format"' --info
         """
 
         let task = Process()
@@ -32,8 +35,8 @@ class LogMonitor {
         }
 
         handle.readabilityHandler = { fileHandle in
-            guard let line = String(data: fileHandle.availableData, encoding: .utf8) else { return }
-            parseLogLine(line)
+            guard let chunk = String(data: fileHandle.availableData, encoding: .utf8) else { return }
+            parseLogLine(chunk)
         }
 
         do {
@@ -44,49 +47,93 @@ class LogMonitor {
             LogWriter.logEssential("❌ Failed to start log stream: \(error)", module: .monitoringAndRateSwitching)
         }
     }
-    //using stream now
-    private static func parseLogLine(_ line: String) {
-        guard line.contains("activeFormat:") else { return }
 
-        // Note: adjusted pattern to extract sample rate from groupID
-        let pattern = #"tier: ([^;]+);.*groupID: audio-[^;]+-([0-9]+)-[0-9]+;.*bitDepth: ([^;]+);"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) else {
+    /// Parses log stream lines and extracts sample rate + audio format
+    private static func parseLogLine(_ chunk: String) {
+
+        let lines = chunk.components(separatedBy: .newlines)
+
+        guard let lastLine = lines.last(where: {
+            $0.contains("sampleRate:") && $0.contains("format:'")
+        }) else {
             return
         }
 
-        guard let qualityRange = Range(match.range(at: 1), in: line),
-              let sampleRateRange = Range(match.range(at: 2), in: line),
-              let bitDepthRange = Range(match.range(at: 3), in: line) else {
+        // MARK: - Sample Rate Extraction
+        let sampleRatePattern = #"sampleRate:\s*([^,]+)"#
+
+        guard let rateRegex = try? NSRegularExpression(pattern: sampleRatePattern),
+              let rateMatch = rateRegex.firstMatch(
+                in: lastLine,
+                range: NSRange(lastLine.startIndex..., in: lastLine)
+              ),
+              let rateRange = Range(rateMatch.range(at: 1), in: lastLine)
+        else {
             return
         }
 
-        let quality = String(line[qualityRange])
-        let sampleRateStr = String(line[sampleRateRange])
-        let bitDepth = String(line[bitDepthRange])
+        let sampleRateStr = String(lastLine[rateRange]).trimmingCharacters(in: .whitespaces)
 
-        guard let rateHz = Double(sampleRateStr) else { return }
+        let cleanedRate = sampleRateStr.filter {
+            ("0"..."9").contains($0) || $0 == "."
+        }
+
+        guard let rateHz = Double(cleanedRate) else { return }
+
+        // MARK: - Audio Format Extraction
+        let formatPattern = #"format:'([^']+)'"#
+
+        var audioFormat = ""
+
+        if let formatRegex = try? NSRegularExpression(pattern: formatPattern),
+           let formatMatch = formatRegex.firstMatch(
+                in: lastLine,
+                range: NSRange(lastLine.startIndex..., in: lastLine)
+           ),
+           let formatRange = Range(formatMatch.range(at: 1), in: lastLine) {
+
+            audioFormat = String(lastLine[formatRange])
+                .trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: ".", with: "")
+        }
 
         processingQueue.async {
-            if abs(rateHz - latestSampleRateHz) >= 1 {
-                LogWriter.logEssential("🎚️ Stream detected new sample rate: \(rateHz) Hz (\(quality), \(bitDepth))", module: .monitoringAndRateSwitching)
+            let rateChanged = abs(rateHz - latestSampleRateHz) >= 1
+            let formatChanged = audioFormat != latestAudioFormat
+
+            if rateChanged || formatChanged {
+                LogWriter.logEssential(
+                    "🎚️ Audio Update → format: \(audioFormat), sampleRate: \(rateHz) Hz",
+                    module: .monitoringAndRateSwitching
+                )
             }
+
             latestSampleRateHz = rateHz
+            latestAudioFormat = audioFormat
         }
     }
 
-
-
-    /// API-compatible method used elsewhere in the app
-    static func fetchLatestSampleRate(forTrack trackName: String, completion: @escaping (Double, String) -> Void) {
+    /// API used elsewhere in the app
+    static func fetchLatestSampleRate(
+        forTrack trackName: String,
+        completion: @escaping (Double, String, String) -> Void
+    ) {
         startMonitoringIfNeeded()
 
         processingQueue.asyncAfter(deadline: .now() + 0.1) {
-            // Fallback if no sample rate detected yet
+
             if latestSampleRateHz == 0 {
-                LogWriter.logNormal("⚠️ No sample rate detected yet via log stream — returning 0", module: .monitoringAndRateSwitching)
+                LogWriter.logNormal(
+                    "⚠️ No sample rate detected yet via log stream — returning 0",
+                    module: .monitoringAndRateSwitching
+                )
             }
-            completion(latestSampleRateHz, trackName)
+
+            completion(
+                latestSampleRateHz,
+                trackName,
+                latestAudioFormat
+            )
         }
     }
 
